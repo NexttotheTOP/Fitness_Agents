@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "langgaph-course"
+name = "RAGS"
 version = "0.1.0"
 description = ""
 authors = ["Eden Marco <emarco177@gmail.com>"]
