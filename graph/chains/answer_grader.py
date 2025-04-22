@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.runnables import RunnableSequence
 from langchain_openai import ChatOpenAI
+import os
 
 
 class GradeAnswer(BaseModel):
@@ -11,7 +12,7 @@ class GradeAnswer(BaseModel):
     )
 
 
-llm = ChatOpenAI(temperature=0)
+llm = ChatOpenAI(temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"))
 structured_llm_grader = llm.with_structured_output(GradeAnswer)
 
 system = """You are a grader assessing whether an answer addresses / resolves a question \n 
