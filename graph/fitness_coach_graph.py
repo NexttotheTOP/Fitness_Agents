@@ -89,7 +89,8 @@ def get_initial_state(user_profile: dict = None) -> WorkoutState:
         original_workout=None,
         variations=[],
         analysis={},
-        generation=None
+        generation=None,
+        body_analysis=None  # Initialize the body_analysis field
     )
 
 async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterable[str]:
@@ -108,14 +109,36 @@ async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterab
                 yield chunk
     else:
         # Profile creation mode - use simple markdown streaming
+        profile_agent = ProfileAgent()
         dietary_agent = DietaryAgent()
         fitness_agent = FitnessAgent()
         
         # Initial header
         yield "# Creating Your Personalized Fitness Profile\n\n"
         
+        # Check if we have body photos for analysis
+        has_body_photos = False
+        if isinstance(state["user_profile"], dict):
+            has_body_photos = "imagePaths" in state["user_profile"] and any(state["user_profile"].get("imagePaths", {}).values())
+        
+        # Generate profile assessment
+        yield "## Profile Assessment\n\n"
+        
+        # If we have body photos, indicate that analysis is happening
+        if has_body_photos:
+            yield "Analyzing your body photos for a comprehensive assessment...\n\n"
+        
+        async for chunk in profile_agent.stream(state):
+            if chunk:
+                yield chunk
+        
+        # If body analysis was completed, show a separate section
+        if state.get("body_analysis"):
+            yield "\n## Body Composition Analysis\n\n"
+            yield state["body_analysis"]
+        
         # Generate dietary recommendations
-        yield "## Dietary Plan\n\n"
+        yield "\n## Dietary Plan\n\n"
         async for chunk in dietary_agent.stream(state):
             if chunk:
                 yield chunk
@@ -144,7 +167,8 @@ def process_query(state: WorkoutState, query: str, config: dict = None) -> Worko
         original_workout=state.get("original_workout"),
         variations=state.get("variations", []),
         analysis=state.get("analysis", {}),
-        generation=state.get("generation")
+        generation=state.get("generation"),
+        body_analysis=state.get("body_analysis")  # Preserve body analysis
     )
     
     if config is None:

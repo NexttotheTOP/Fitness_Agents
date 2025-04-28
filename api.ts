@@ -8,6 +8,7 @@ export interface FitnessProfileRequest {
     fitness_goals: string[];
     dietary_preferences: string[];
     health_restrictions: string[];
+    body_photos: string[]; // Not sure here if this is needed
 }
 
 export async function generateProfileOverview(

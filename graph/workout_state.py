@@ -46,6 +46,9 @@ class UserProfile(BaseModel):
     fitness_goals: List[str] = []
     dietary_preferences: List[str] = []
     health_restrictions: List[str] = []
+    body_photos: Optional[List[str]] = None  # URLs or paths to body photos
+    body_type: Optional[str] = None  # Analysis result of body type
+    imagePaths: Optional[Dict[str, List[str]]] = None  # Structured image paths with front, side, back views
     
     class Config:
         extra = "allow"
@@ -80,4 +83,7 @@ class WorkoutState(TypedDict):
     fitness_state: AgentState
     current_query: str
     query_type: str  # "dietary", "fitness", "general", or "profile"
-    conversation_history: List[Dict[str, str]] 
+    conversation_history: List[Dict[str, str]]
+    
+    # Body analysis fields
+    body_analysis: Optional[str]  # Result of vision model body analysis 
