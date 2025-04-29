@@ -6,61 +6,25 @@ from langgraph.checkpoint.memory import MemorySaver
 import json
 
 from graph.workout_state import WorkoutState, AgentState, QueryType
-from graph.nodes.fitness_coach import ProfileAgent, DietaryAgent, FitnessAgent, QueryAgent
-from graph.nodes.query_analyzer import QueryAnalyzer
+from graph.nodes.fitness_coach import ProfileAgent, DietaryAgent, FitnessAgent, QueryAgent, HeadCoachAgent
 
 def create_fitness_coach_workflow():
-    """Create the fitness coach workflow with memory and thread management"""
+    """Create a simplified fitness coach workflow with memory and thread management"""
     workflow = StateGraph(WorkoutState)
     
     # Add nodes for each agent
-    workflow.add_node("analyzer", QueryAnalyzer())
     workflow.add_node("profile", ProfileAgent())
     workflow.add_node("dietary", DietaryAgent())
     workflow.add_node("fitness", FitnessAgent())
     workflow.add_node("query", QueryAgent())
     
-    # Define conditional edges based on analysis
-    def route_by_analysis(state: WorkoutState) -> str | list[str]:
-        if not state["user_profile"]:
-            return "profile"
-        
-        analysis = state.get("query_analysis", {})
-        
-        # Determine which agents to run based on analysis
-        agents_to_run = []
-        if analysis.get("should_run_dietary"):
-            agents_to_run.append("dietary")
-        if analysis.get("should_run_fitness"):
-            agents_to_run.append("fitness")
-        if analysis.get("should_run_general"):
-            agents_to_run.append("query")
-            
-        if not agents_to_run:
-            return "query"  # Default to general query if no specific agents
-            
-        # If only one agent, return string, otherwise return list
-        return agents_to_run[0] if len(agents_to_run) == 1 else agents_to_run
-    
-    # Add edges for initial profile setup
+    # Create simple linear flow for profile creation
     workflow.add_edge("profile", "dietary")
     workflow.add_edge("dietary", "fitness")
     workflow.add_edge("fitness", END)
     
-    # Add edges for query handling
-    workflow.add_conditional_edges(
-        "analyzer",
-        route_by_analysis,
-        {
-            "dietary": END,
-            "fitness": END,
-            "query": END,
-            "profile": "profile"
-        }
-    )
-    
-    # Set entry point
-    workflow.set_entry_point("analyzer")
+    # Set entry point to profile directly
+    workflow.set_entry_point("profile")
     
     # Create the compiler with memory management
     return workflow.compile(checkpointer=MemorySaver())
@@ -68,10 +32,15 @@ def create_fitness_coach_workflow():
 # Create the app instance
 app = create_fitness_coach_workflow()
 
-def get_initial_state(user_profile: dict = None) -> WorkoutState:
-    """Create initial state with a new thread ID"""
+def get_initial_state(user_profile: dict = None, thread_id: str = None, user_id: str = None) -> WorkoutState:
+    """Create initial state with the provided user ID, thread ID or new ones if not provided"""
+    # Extract user_id from user_profile if it exists and not provided separately
+    if user_profile and "user_id" in user_profile and user_id is None:
+        user_id = user_profile.get("user_id")
+    
     return WorkoutState(
-        thread_id=str(uuid.uuid4()),
+        user_id=user_id or str(uuid.uuid4()),  # Generate a user_id if not provided
+        thread_id=thread_id or str(uuid.uuid4()),  # Generate a thread_id if not provided
         user_profile=user_profile or {},
         dietary_state=AgentState(
             last_update=datetime.now().isoformat(),
@@ -84,104 +53,79 @@ def get_initial_state(user_profile: dict = None) -> WorkoutState:
             is_streaming=False
         ),
         current_query="",
-        query_analysis={},
+        query_type=QueryType.GENERAL,
         conversation_history=[],
         original_workout=None,
         variations=[],
         analysis={},
         generation=None,
-        body_analysis=None  # Initialize the body_analysis field
+        body_analysis=None,
+        complete_response=None
     )
 
 async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterable[str]:
-    """Stream responses from the appropriate agents based on query analysis"""
+    """Stream responses from the appropriate agents"""
     if query:
-        # Query mode - analyze and respond
-        analyzer = QueryAnalyzer()
+        # Query mode - use query agent directly
+        state["current_query"] = query
         query_agent = QueryAgent()
-        
-        analysis = analyzer.analyze(query, state["user_profile"])
-        state["query_analysis"] = analysis.dict()
         
         # Stream response through query agent
         async for chunk in query_agent.stream(state):
             if chunk:
                 yield chunk
     else:
-        # Profile creation mode - use simple markdown streaming
-        profile_agent = ProfileAgent()
-        dietary_agent = DietaryAgent()
-        fitness_agent = FitnessAgent()
+        # Process through graph first to generate the complete content
+        config = {
+            "configurable": {
+                "thread_id": state["thread_id"],
+                "checkpoint_id": f"session_{state['thread_id']}"
+            }
+        }
         
-        # Initial header
-        yield "# Creating Your Personalized Fitness Profile\n\n"
+        # Run the graph to generate all content
+        result_state = app.invoke(state, config=config)
         
-        # Check if we have body photos for analysis
-        has_body_photos = False
-        if isinstance(state["user_profile"], dict):
-            has_body_photos = "imagePaths" in state["user_profile"] and any(state["user_profile"].get("imagePaths", {}).values())
+        # Format the complete response
+        head_coach = HeadCoachAgent()
+        formatted_state = head_coach(result_state)
         
-        # Generate profile assessment
-        yield "## Profile Assessment\n\n"
-        
-        # If we have body photos, indicate that analysis is happening
-        if has_body_photos:
-            yield "Analyzing your body photos for a comprehensive assessment...\n\n"
-        
-        async for chunk in profile_agent.stream(state):
-            if chunk:
-                yield chunk
-        
-        # If body analysis was completed, show a separate section
-        if state.get("body_analysis"):
-            yield "\n## Body Composition Analysis\n\n"
-            yield state["body_analysis"]
-        
-        # Generate dietary recommendations
-        yield "\n## Dietary Plan\n\n"
-        async for chunk in dietary_agent.stream(state):
-            if chunk:
-                yield chunk
-        
-        # Generate fitness recommendations
-        yield "\n## Fitness Plan\n\n"
-        async for chunk in fitness_agent.stream(state):
-            if chunk:
-                yield chunk
-        
-        # Final message
-        yield "\n---\n\n"
-        yield "Your personalized fitness and dietary plans have been created. You can now ask specific questions about your plans."
+        # Return complete response in chunks
+        sections = formatted_state["complete_response"].split("\n\n")
+        for section in sections:
+            yield section + "\n\n"
 
 def process_query(state: WorkoutState, query: str, config: dict = None) -> WorkoutState:
     """Process a user query using the existing thread"""
     # Create a new state with the existing data plus the query
     query_state = WorkoutState(
+        user_id=state["user_id"],
         thread_id=state["thread_id"],
         user_profile=state["user_profile"],
         dietary_state=state["dietary_state"],
         fitness_state=state["fitness_state"],
         current_query=query,
-        query_analysis={},  # Will be set by analyzer
+        query_type=QueryType.GENERAL,  # Default type
         conversation_history=state["conversation_history"],
         original_workout=state.get("original_workout"),
         variations=state.get("variations", []),
         analysis=state.get("analysis", {}),
         generation=state.get("generation"),
-        body_analysis=state.get("body_analysis")  # Preserve body analysis
+        body_analysis=state.get("body_analysis"),
+        complete_response=state.get("complete_response")
     )
     
     if config is None:
         config = {
             "configurable": {
                 "thread_id": state["thread_id"],
-                "checkpoint_ns": "fitness_coach",
                 "checkpoint_id": f"session_{state['thread_id']}"
             }
         }
     
-    # Process the query through the workflow
-    result = app.invoke(query_state, config=config)
+    # Just use the QueryAgent directly instead of going through the graph
+    query_agent = QueryAgent()
+    result = query_agent(query_state)
     
     # Update the session state with the results
     state.update(result)
