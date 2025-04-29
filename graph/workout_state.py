@@ -38,6 +38,8 @@ class WorkoutRequest(BaseModel):
         extra = "allow"
 
 class UserProfile(BaseModel):
+    user_id: Optional[str] = None
+    thread_id: Optional[str] = None
     age: int = 30
     gender: str = "unspecified"
     height: str = "170cm"
@@ -46,7 +48,7 @@ class UserProfile(BaseModel):
     fitness_goals: List[str] = []
     dietary_preferences: List[str] = []
     health_restrictions: List[str] = []
-    body_photos: Optional[List[str]] = None  # URLs or paths to body photos
+    body_photos: Optional[List[str]] = None 
     body_type: Optional[str] = None  # Analysis result of body type
     imagePaths: Optional[Dict[str, List[str]]] = None  # Structured image paths with front, side, back views
     
@@ -77,7 +79,8 @@ class WorkoutState(TypedDict):
     generation: Optional[str]
     
     # New fitness coach fields
-    thread_id: str
+    user_id: str  # Primary identifier for the user
+    thread_id: str  # Used for LangGraph state management
     user_profile: Dict[str, Any]
     dietary_state: AgentState
     fitness_state: AgentState
@@ -86,4 +89,11 @@ class WorkoutState(TypedDict):
     conversation_history: List[Dict[str, str]]
     
     # Body analysis fields
-    body_analysis: Optional[str]  # Result of vision model body analysis 
+    body_analysis: Optional[str]  # Result of vision model body analysis
+    
+    # Complete response field
+    complete_response: Optional[str]  # Final formatted response from HeadCoach
+    
+    # Progress tracking fields
+    previous_complete_response: Optional[str]  # Previous response for comparison
+    progress_comparison: Optional[str]  # Generated comparison of progress 
