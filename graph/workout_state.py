@@ -97,3 +97,6 @@ class WorkoutState(TypedDict):
     # Progress tracking fields
     previous_complete_response: Optional[str]  # Previous response for comparison
     progress_comparison: Optional[str]  # Generated comparison of progress 
+    
+    # Structured previous overview sections
+    previous_sections: Optional[Dict[str, str]]  # Previous overview parsed into sections 
