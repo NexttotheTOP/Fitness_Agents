@@ -222,52 +222,48 @@ async def create_fitness_profile(profile: FitnessProfileRequest):
             }
         }
         
-        # Check if we have previous state history for this thread_id
-        previous_complete_response = None
-        try:
-            # Get state history for this thread
-            state_history = list(app.get_state_history(config))
-            
-            # If there's history, get the most recent state that has complete_response
-            if state_history and len(state_history) > 0:
-                # State history is ordered with most recent first
-                for state_snapshot in state_history:
-                    if "complete_response" in state_snapshot.values:
-                        previous_complete_response = state_snapshot.values.get("complete_response")
-                        logging.info(f"Found previous complete_response for thread {thread_id}")
-                        break
-        except Exception as e:
-            logging.error(f"Error retrieving state history for thread {thread_id}: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
+        # Previous data already loaded in get_initial_state, so no need to load it here again
+        # The previous_sections field should be populated with structured sections
         
-        # Add previous complete response to the initial state if available
-        if previous_complete_response:
-            initial_state["previous_complete_response"] = previous_complete_response
+        # Process through the workflow directly and generate complete content
+        logging.info(f"Generating fitness profile for user {user_id} using stream_response")
         
-        # Process through the workflow directly (profile -> dietary -> fitness)
-        result_state = app.invoke(initial_state, config=config)
+        # Use the stream_response function to ensure storage happens
+        complete_content = ""
+        async for chunk in stream_response(initial_state):
+            complete_content += chunk
         
-        # Use HeadCoachAgent to format the complete response
-        from graph.nodes.fitness_coach import HeadCoachAgent
-        head_coach = HeadCoachAgent()
-        formatted_state = head_coach(result_state)
+        logging.info(f"Generated complete content, length: {len(complete_content)}")
+        
+        # Get the final state with complete_response from active_sessions if available
+        # Or use the HeadCoachAgent to format it directly
+        if thread_id in active_sessions:
+            formatted_state = active_sessions[thread_id]
+            logging.info("Retrieved formatted state from active_sessions")
+        else:
+            # If not in active_sessions (shouldn't happen but just in case)
+            logging.info("State not found in active_sessions, processing directly")
+            result_state = app.invoke(initial_state, config=config)
+            from graph.nodes.fitness_coach import HeadCoachAgent
+            head_coach = HeadCoachAgent()
+            formatted_state = head_coach(result_state)
+            active_sessions[thread_id] = formatted_state
         
         # Get image timestamps from user_profile_data
         image_timestamps = {}
         if "user_profile_data" in formatted_state and isinstance(formatted_state["user_profile_data"], dict):
             image_timestamps = formatted_state["user_profile_data"].get("image_timestamps", {})
         
-        # Store session state - use both user_id and thread_id as keys
-        active_sessions[thread_id] = formatted_state
+        # Return the response with indicator for previous data
+        has_previous_data = formatted_state.get("previous_sections") is not None or formatted_state.get("previous_complete_response") is not None
         
-        # Return the response
         return {
             "user_id": user_id,
             "thread_id": thread_id,
             "body_analysis": formatted_state.get("body_analysis"),
             "image_timestamps": image_timestamps,
             "content": formatted_state.get("complete_response", ""),
-            "has_previous_data": previous_complete_response is not None
+            "has_previous_data": has_previous_data
         }
     
     except Exception as e:
@@ -442,6 +438,146 @@ async def get_rag_status():
         logging.error(f"Error checking RAG status: {str(e)}")
         return {"status": "error", "message": str(e)}
 
+@api.get("/fitness/test-db")
+async def test_db_connection():
+    """Test the database connection and table setup"""
+    try:
+        from graph.memory_store import test_supabase_connection_and_table
+        
+        # Run the comprehensive test
+        test_result = test_supabase_connection_and_table()
+        
+        if test_result:
+            return {
+                "status": "success",
+                "message": "Database connection and table setup validated successfully"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Database connection or table setup has issues - check logs"
+            }
+    except Exception as e:
+        logging.error(f"Error testing database connection: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to test database connection"
+        }
+
+@api.get("/fitness/profiles/{user_id}")
+async def get_user_profiles(user_id: str):
+    """Get all stored profiles for a specific user"""
+    try:
+        from graph.memory_store import get_previous_profile_overviews
+        
+        # Get all previous overviews for this user
+        profiles = get_previous_profile_overviews(user_id, limit=10)
+        
+        # Format the response
+        formatted_profiles = []
+        for profile in profiles:
+            # Limit the response text size for the overview
+            response_preview = profile.get("response", "")
+            if len(response_preview) > 500:
+                response_preview = response_preview[:497] + "..."
+                
+            formatted_profiles.append({
+                "id": profile.get("id"),
+                "thread_id": profile.get("thread_id"),
+                "timestamp": profile.get("timestamp"),
+                "metadata": profile.get("metadata"),
+                "response_preview": response_preview,
+                "response_length": len(profile.get("response", ""))
+            })
+        
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "profile_count": len(formatted_profiles),
+            "profiles": formatted_profiles
+        }
+    except Exception as e:
+        logging.error(f"Error retrieving profiles for user {user_id}: {str(e)}")
+        return {
+            "status": "error",
+            "user_id": user_id,
+            "error": str(e),
+            "message": "Failed to retrieve profiles"
+        }
+
+@api.post("/fitness/test-storage")
+async def test_profile_storage():
+    """Test directly storing a profile in Supabase"""
+    try:
+        from graph.memory_store import store_profile_overview
+        
+        # Generate test data
+        test_user_id = f"test_user_{uuid.uuid4()}"
+        test_thread_id = f"test_thread_{uuid.uuid4()}"
+        test_overview = f"This is a test overview from the direct storage test endpoint l. Generated at {datetime.now().isoformat()}"
+        test_metadata = {
+            "test": True,
+            "age": 30,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logging.info(f"Testing direct storage with user_id: {test_user_id}")
+        
+        # Try to store the test data
+        result = store_profile_overview(
+            test_user_id,
+            test_thread_id,
+            test_overview,
+            test_metadata
+        )
+        
+        # Then try to retrieve it
+        from graph.memory_store import get_previous_profile_overviews
+        retrieved = get_previous_profile_overviews(test_user_id, limit=1)
+        
+        return {
+            "status": "success" if result and retrieved else "error",
+            "storage_result": result,
+            "retrieval_result": retrieved,
+            "message": "Test storage and retrieval completed",
+            "test_user_id": test_user_id,
+            "test_thread_id": test_thread_id
+        }
+    except Exception as e:
+        logging.error(f"Error testing profile storage: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to test profile storage"
+        }
+
 if __name__ == "__main__":
     import uvicorn
+    import signal
+    import sys
+    
+    # Define shutdown handler
+    def handle_shutdown(signum, frame):
+        """Handle graceful shutdown by closing connections"""
+        print("\nShutting down server...")
+        
+        # Close any open connections or resources
+        try:
+            # Close PostgreSQL connection pool if it exists
+            from graph.memory_store import _connection_pool
+            if _connection_pool:
+                print("Closing PostgreSQL connection pool...")
+                _connection_pool.close()
+        except Exception as e:
+            print(f"Error during shutdown: {str(e)}")
+        
+        print("Shutdown complete.")
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, handle_shutdown)  # Ctrl+C
+    signal.signal(signal.SIGTERM, handle_shutdown)  # kill command
+    
+    # Run the server
     uvicorn.run(api, host="0.0.0.0", port=8000)

@@ -9,9 +9,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from graph.workout_state import WorkoutState, UserProfile, AgentState, QueryType
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 import json
 from dotenv import load_dotenv
+# Add Anthropic imports
+import anthropic
+from anthropic import Anthropic
 
 # Load environment variables
 load_dotenv()
@@ -26,18 +29,29 @@ class ProfileAgent:
             callbacks=[StreamingStdOutCallbackHandler()]
         )
         
-        # Vision model for body composition analysis
-        self.vision_model = ChatOpenAI(
-            model="gpt-4o",  # GPT-4o supports vision out of the box
-            temperature=0.1,
-            max_tokens=4096,
-            streaming=True,
-            callbacks=[StreamingStdOutCallbackHandler()]
-        )
+        # Initialize Anthropic client for vision analysis
+        self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not self.anthropic_api_key:
+            print("Warning: ANTHROPIC_API_KEY not found in environment variables")
+            # Fall back to OpenAI if no Anthropic key is available
+            self.use_claude = False
+            # Vision model for body composition analysis (fallback to OpenAI)
+            self.vision_model = ChatOpenAI(
+                model="gpt-4o",
+                temperature=0.1,
+                max_tokens=4096,
+                streaming=True,
+                callbacks=[StreamingStdOutCallbackHandler()]
+            )
+        else:
+            self.use_claude = True
+            self.anthropic_client = Anthropic(api_key=self.anthropic_api_key)
+            self.claude_model = "claude-3-sonnet-20240229"
+            print("Using Claude for vision analysis")
         
         # Get the Supabase service key and URL from environment variables
-        self.supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
-        self.supabase_url = os.getenv("SUPABASE_URL", "https://hjzszgaugorgqbbsuqgc.supabase.co")
+        self.supabase_service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        self.supabase_url = os.environ.get("SUPABASE_URL", "https://hjzszgaugorgqbbsuqgc.supabase.co")
         
         if not self.supabase_service_key:
             print("Warning: SUPABASE_SERVICE_KEY not found in environment variables")
@@ -126,6 +140,8 @@ class ProfileAgent:
                     mime_type = "image/gif"
                 elif image_url.lower().endswith('.jpeg') or image_url.lower().endswith('.jpg'):
                     mime_type = "image/jpeg"
+                elif image_url.lower().endswith('.webp'):
+                    mime_type = "image/webp"
                 elif "png" in image_url.lower():
                     mime_type = "image/png"
                 else:
@@ -134,19 +150,22 @@ class ProfileAgent:
             # Convert image to base64
             image_data = base64.b64encode(response.content).decode('utf-8')
             
-            # Make sure the data URL is properly formatted
-            data_url = f"data:{mime_type};base64,{image_data}"
-            
-            # Print sample of base64 data for debugging (first 20 chars)
-            data_sample = image_data[:20] + "..." if len(image_data) > 20 else image_data
-            print(f"Successfully encoded image as base64 ({mime_type}, {len(image_data)} chars)")
-            print(f"Data URL format: data:{mime_type};base64,{data_sample}...")
-            
-            # Verify the data URL format to ensure it's correct for the API
-            if not data_url.startswith("data:image/"):
-                print(f"Warning: Data URL format seems incorrect: {data_url[:30]}...")
+            if self.use_claude:
+                # For Claude, we need just the base64 string and media type, not a data URL
+                print(f"Successfully encoded image as base64 ({mime_type}, {len(image_data)} chars)")
+                return {"data": image_data, "media_type": mime_type}
+            else:
+                # For OpenAI, we need a data URL
+                data_url = f"data:{mime_type};base64,{image_data}"
+                data_sample = image_data[:20] + "..." if len(image_data) > 20 else image_data
+                print(f"Successfully encoded image as base64 ({mime_type}, {len(image_data)} chars)")
+                print(f"Data URL format: data:{mime_type};base64,{data_sample}...")
                 
-            return data_url
+                # Verify the data URL format to ensure it's correct for the API
+                if not data_url.startswith("data:image/"):
+                    print(f"Warning: Data URL format seems incorrect: {data_url[:30]}...")
+                    
+                return data_url
         except Exception as e:
             print(f"Error in _get_image_as_base64 for {image_url}: {str(e)}")
             return None
@@ -192,14 +211,25 @@ class ProfileAgent:
                     break
             
             if base64_image:
-                # Follow OpenAI's exact format for image_url objects
-                formatted_images.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": base64_image,
-                        "detail": "high"
-                    }
-                })
+                if self.use_claude:
+                    # Format for Claude
+                    formatted_images.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": base64_image["media_type"],
+                            "data": base64_image["data"]
+                        }
+                    })
+                else:
+                    # Format for OpenAI
+                    formatted_images.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": base64_image,
+                            "detail": "high"
+                        }
+                    })
                 
                 # Store timestamp 
                 if view_type not in image_timestamps:
@@ -236,12 +266,14 @@ class ProfileAgent:
             # Print information about the successfully formatted images
             print(f"Successfully processed {len(formatted_images)} images:")
             for i, img in enumerate(formatted_images):
-                # Check if the image URL is a base64 string
-                is_base64 = isinstance(img['image_url']['url'], str) and img['image_url']['url'].startswith('data:')
-                
-                # Print summary info about each image
-                url_preview = "base64 data" if is_base64 else img['image_url']['url']
-                print(f"  Image {i+1}: type={img['type']}, format={url_preview[:30]}...")
+                if self.use_claude:
+                    # Print for Claude format
+                    print(f"  Image {i+1}: type={img['type']}, media_type={img['source']['media_type']}")
+                else:
+                    # Print for OpenAI format
+                    is_base64 = isinstance(img['image_url']['url'], str) and img['image_url']['url'].startswith('data:')
+                    url_preview = "base64 data" if is_base64 else img['image_url']['url']
+                    print(f"  Image {i+1}: type={img['type']}, format={url_preview[:30]}...")
         
         # Store timestamps in user profile for later use
         user_profile["image_timestamps"] = image_timestamps
@@ -258,7 +290,7 @@ class ProfileAgent:
             print("No body photos found in profile, cannot analyze body composition")
             return None
 
-        # Format the images for OpenAI API call
+        # Format the images for API call
         formatted_images = self._format_body_photos(user_profile)
         
         if not formatted_images:
@@ -269,8 +301,12 @@ class ProfileAgent:
         
         # Create analysis prompt based on user information
         prompt_text = f"""
-You are a professional fitness coach and nutritionist analyzing body composition photos.
-Your task is to analyze these body photos, which show the person from different angles.
+            [Persona]
+            You are a high-skilled professional fitness coach and nutritionist analyzing body composition photos of clients.
+            
+            [Task]
+            Your task is to analyze the provided body photos of a client, which show the person from different angles.
+            You are given a list of images of the client, and you need to analyze each image carefully and provide your findings.
 
 User details:
 - Age: {user_profile.get('age', 'unknown')}
@@ -279,67 +315,147 @@ User details:
 - Weight: {user_profile.get('weight', 'unknown')}
 - Fitness goals: {user_profile.get('fitness_goals', 'unknown')}
 
-Analyze each photo carefully. First describe what you see in a neutral, professional way.
-Then estimate:
-1. Approximate body fat percentage
-2. Current muscle mass regions (areas with good development vs. needs improvement)
-3. Posture observations 
-4. Apparent imbalances
+            [Instructions]
+            1. Begin your analysis with the section header "## Body Composition Analysis"
+            
+            2. Analyze each photo carefully. First describe what you see in a neutral, professional way.
+            
+            3. Then estimate and present in bold:
+               - **Approximate Body Fat: 15-20%** (use this format)
+               - **BMI: 24.3** (if you can calculate it)
+               - Any other relevant measurements
 
-Finally, summarize your assessment and provide objective recommendations based on these visual observations combined with the user's stated goals.
+            4. Analyze and report on:
+               - Current muscle mass regions (areas with good development vs. needs improvement)
+               - Posture observations 
+               - Apparent imbalances
+
+            5. Summarize your assessment and provide objective recommendations to the client based on these visual observations combined with the user's stated goals, be brutally honest.
+            
+            6. Formatting guidelines:
+               - Use "## Body Composition Analysis" as the ONLY level 2 (H2) heading in your response
+               - Use level 3 headings (###) for all subsections such as "### Measurements" or "### Muscle Assessment"
+               - NEVER use level 2 headings (##) for any subsection - only for the main section title
+               - Format all measurements and calculations in bold (e.g., **Body Fat: 18%**)
+               - Use standard markdown for lists and formatting
+               - Separate major sections with a blank line
+               - Keep your analysis concise and easy to read
+               - Always end your response with "---" (three dashes) as a separator
 """
         
-        # Create a content array for the message
-        content = [
-            {"type": "text", "text": prompt_text}
-        ]
-        
-        # Add each formatted image to the content array
-        for image in formatted_images:
-            content.append(image)  # Each image is already in {"type": "image_url", "image_url": {"url": ...}} format
-        
-        # Add additional instructions at the end
-        content.append({
-            "type": "text", 
-            "text": "Based on all images shown, provide a complete analysis with percentage estimates. Be professional and honest in your assessment, while remaining encouraging."
-        })
-        
-        # Make sure the content format is correct for a multimodal message
-        print(f"Content has {len(content)} items: {len([i for i in content if i['type'] == 'text'])} text and {len([i for i in content if i['type'] == 'image_url'])} images")
-        
-        # Print the structure of content for debugging (without the actual image data)
-        debug_content = []
-        for item in content:
-            if item['type'] == 'text':
-                debug_content.append({'type': 'text', 'text': item['text'][:50] + '...'})
-            else:
-                url_preview = "data:image..." if isinstance(item['image_url']['url'], str) and item['image_url']['url'].startswith('data:') else str(item['image_url']['url'])[:30] + '...'
-                debug_content.append({'type': 'image_url', 'image_url': {'url': url_preview}})
-        
-        print(f"Message content structure: {json.dumps(debug_content, indent=2)}")
-        
-        try:
-            # Use the vision model initialized in __init__
-            messages = [HumanMessage(content=content)]
-            print(f"Sending request to vision model with {len(messages)} messages")
+        if self.use_claude:
+            # For Claude API
+            # Create content array for Claude
+            content = [
+                {"type": "text", "text": prompt_text}
+            ]
             
-            response = await self.vision_model.ainvoke(messages)
+            # Add each formatted image to the content array
+            for image in formatted_images:
+                content.append(image)
             
-            # Extract the analysis from the response
-            analysis = response.content
+            # Add additional instructions at the end
+            content.append({
+                "type": "text", 
+                "text": "Based on all images shown, provide a complete analysis with percentage estimates. Be professional and brutally honest in your assessment, while remaining encouraging."
+            })
             
-            # Print a sample of the response for debugging
-            print(f"Analysis response received, {len(analysis)} chars")
-            print(f"Sample of analysis: {analysis[:150]}...")
+            # Print the structure of content for debugging
+            debug_content = []
+            for item in content:
+                if item["type"] == "text":
+                    debug_content.append({"type": "text", "text": item["text"][:50] + "..."})
+                else:
+                    debug_content.append({"type": "image", "source": {"type": "base64", "media_type": item["source"]["media_type"]}})
             
-            return analysis
-        except Exception as e:
-            print(f"Error during body composition analysis: {str(e)}")
-            # Print more detailed error information
-            import traceback
-            print(f"Detailed error: {traceback.format_exc()}")
-            return None
-    
+            print(f"Content has {len(content)} items: {len([i for i in content if i['type'] == 'text'])} text and {len([i for i in content if i['type'] == 'image'])} images")
+            print(f"Message content structure: {json.dumps(debug_content, indent=2)}")
+            
+            try:
+                # Format the message for Claude's Messages API
+                messages = [
+                    {
+                        "role": "user",
+                        "content": content
+                    }
+                ]
+                
+                print(f"Sending request to Claude vision model with {len(messages)} messages")
+                
+                # Make the API call to Claude
+                response = self.anthropic_client.messages.create(
+                    model=self.claude_model,
+                    max_tokens=1024,
+                    messages=messages
+                )
+                
+                # Extract the analysis from the response
+                analysis = response.content[0].text
+                
+                # Print a sample of the response for debugging
+                print(f"Analysis response received, {len(analysis)} chars")
+                print(f"Sample of analysis: {analysis[:150]}...")
+                
+                return analysis
+            except Exception as e:
+                print(f"Error during body composition analysis with Claude: {str(e)}")
+                # Print more detailed error information
+                import traceback
+                print(f"Detailed error: {traceback.format_exc()}")
+                return None
+        else:
+            # For OpenAI API (existing code)
+            # Create a content array for the message
+            content = [
+                {"type": "text", "text": prompt_text}
+            ]
+            
+            # Add each formatted image to the content array
+            for image in formatted_images:
+                content.append(image)  # Each image is already in {"type": "image_url", "image_url": {"url": ...}} format
+            
+            # Add additional instructions at the end
+            content.append({
+                "type": "text", 
+                "text": "Based on all images shown, provide a complete analysis with percentage estimates. Be professional and brutally honest in your assessment, while remaining encouraging."
+            })
+            
+            # Make sure the content format is correct for a multimodal message
+            print(f"Content has {len(content)} items: {len([i for i in content if i['type'] == 'text'])} text and {len([i for i in content if i['type'] == 'image_url'])} images")
+            
+            # Print the structure of content for debugging (without the actual image data)
+            debug_content = []
+            for item in content:
+                if item['type'] == 'text':
+                    debug_content.append({'type': 'text', 'text': item['text'][:50] + '...'})
+                else:
+                    url_preview = "data:image..." if isinstance(item['image_url']['url'], str) and item['image_url']['url'].startswith('data:') else str(item['image_url']['url'])[:30] + '...'
+                    debug_content.append({'type': 'image_url', 'image_url': {'url': url_preview}})
+            
+            print(f"Message content structure: {json.dumps(debug_content, indent=2)}")
+            
+            try:
+                # Use the vision model initialized in __init__
+                messages = [HumanMessage(content=content)]
+                print(f"Sending request to vision model with {len(messages)} messages")
+                
+                response = await self.vision_model.ainvoke(messages)
+                
+                # Extract the analysis from the response
+                analysis = response.content
+                
+                # Print a sample of the response for debugging
+                print(f"Analysis response received, {len(analysis)} chars")
+                print(f"Sample of analysis: {analysis[:150]}...")
+                
+                return analysis
+            except Exception as e:
+                print(f"Error during body composition analysis: {str(e)}")
+                # Print more detailed error information
+                import traceback
+                print(f"Detailed error: {traceback.format_exc()}")
+                return None
+
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream the profile analysis"""
         if not state["user_profile"]:
@@ -350,22 +466,74 @@ Finally, summarize your assessment and provide objective recommendations based o
         if isinstance(state["user_profile"], dict):
             has_body_photos = "imagePaths" in state["user_profile"] and any(state["user_profile"].get("imagePaths", {}).values())
         
+        # Check if we have previous profile data
+        previous_profile_assessment = None
+        previous_body_analysis = None
+        if state.get("previous_sections"):
+            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
+            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
+        
         if has_body_photos:
             # Stream the body composition analysis
             body_analysis = await self._analyze_body_composition(state["user_profile"])
             
-            # Prepare prompts with body analysis
+            # Prepare prompts with body analysis and previous data
             profile_prompt = f"""
-            Analyze the following user profile information and body analysis to create 
-            a comprehensive fitness profile:
-            
-            User Profile: {json.dumps(state["user_profile"])}
-            
-            Body Analysis: {body_analysis}
-            
-            Provide a comprehensive profile assessment that combines this information into a 
-            cohesive assessment for the user. Focus on how their body composition, structure,
-            and goals align to create actionable fitness recommendations.
+                [Persona]
+                You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
+
+                [Task]
+                Analyze the client's current profile data and body analysis, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes, improvements, and areas needing attention.
+
+                [Context]
+                --- CURRENT CLIENT PROFILE ---
+                {json.dumps(state["user_profile"])}
+
+                --- CURRENT BODY ANALYSIS ---
+                {body_analysis}
+
+                {f'''--- PREVIOUS ASSESSMENTS ---
+                Previous Profile Assessment:
+                {previous_profile_assessment}
+
+                Previous Body Analysis:
+                {previous_body_analysis}
+                ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
+
+                [Instructions]
+                1. Create a clear, structured assessment with the following sections:
+                - Current fitness status overview
+                - Analysis of body composition and structure 
+                - Alignment between client's goals and current physical state
+                - Realistic timeframes for achieving stated goals
+                - Key focus areas for improvement
+
+                2. {f'''Progress Comparison Analysis:
+                - Compare current measurements/stats with previous assessment
+                - Identify specific improvements in body composition, posture, or muscle development
+                - Quantify changes in weight, muscle mass, and body fat percentage when possible
+                - Highlight areas showing good progress
+                - Identify areas still requiring targeted work
+                - Analyze if progress is aligned with previously stated goals
+                ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
+
+                3. Professional tone:
+                - Be honest but encouraging
+                - Use precise, measurable language
+                - Avoid generic statements; be specific to this client
+                - Balance constructive feedback with positive reinforcement
+
+                4. Formatting guidelines:
+                - Use "## Profile Assessment" as the main section header
+                - Use only H3 ("###") headings for subsections 
+                - NEVER use level 2 headings (##) for any subsection - only for the main section title
+                - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
+                - Use horizontal rules (---) to separate major sections
+                - Use bullet points for lists of recommendations
+                - Keep paragraphs concise and easy to read
+                - Always end your response with "---" (three dashes) as a separator
+
+                Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
             """
             
             async for chunk in self.llm.astream(profile_prompt):
@@ -384,23 +552,59 @@ Finally, summarize your assessment and provide objective recommendations based o
                     body_type = body_type_part.split("\n")[0].strip()
                     state["user_profile"]["body_type"] = body_type
         else:
-            # Standard profile analysis without body photos
+            # Standard profile analysis without body photos, but include previous data
             profile_prompt = f"""
-            Analyze the user profile information and ensure it's complete for creating 
-            personalized health and fitness plans. Current profile: {state["user_profile"]}
-            
-            Validate or request additional information such as:
-            1. Age
-            2. Gender
-            3. Height
-            4. Weight
-            5. Activity Level
-            6. Fitness Goals
-            7. Dietary Preferences
-            8. Any health restrictions or medical conditions
-            
-            Provide a comprehensive profile assessment including recommendations based on the 
-            provided information.
+                [Persona]
+                You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
+
+                [Task]
+                Analyze the client's current profile data, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes and areas needing attention.
+
+                [Context]
+                --- CURRENT CLIENT PROFILE ---
+                {json.dumps(state["user_profile"])}
+
+                {f'''--- PREVIOUS ASSESSMENTS ---
+                Previous Profile Assessment:
+                {previous_profile_assessment}
+
+                Previous Body Analysis:
+                {previous_body_analysis}
+                ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
+
+                [Instructions]
+                1. Create a clear, structured assessment with the following sections:
+                - Current fitness status overview based on provided metrics
+                - Analysis of client's stated goals and their achievability
+                - Alignment between dietary preferences and fitness goals
+                - Realistic recommendations for fitness journey
+
+                2. {f'''Progress Comparison Analysis:
+                - Compare current profile metrics with previous assessment
+                - Identify changes in weight, age, activity level, or goals
+                - Analyze if their goals have shifted over time
+                - Evaluate progress based on available information
+                - Provide continuity in recommendations based on their journey
+                ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
+
+                3. Professional tone:
+                - Be honest but encouraging
+                - Use precise, measurable language
+                - Identify any missing information that would be valuable for assessment
+                - Provide actionable recommendations based on available data
+                - Balance constructive feedback with positive reinforcement
+
+                4. Formatting guidelines:
+                - Use "## Profile Assessment" as the main section header
+                - NEVER use level 2 headings (##) for any subsection - only for the main section title
+                - Use only H3 ("###") headings for subsections
+                - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
+                - Use horizontal rules (---) to separate major sections
+                - Use bullet points for lists of recommendations
+                - Keep paragraphs concise and easy to read
+                - Always end your response with "---" (three dashes) as a separator
+
+                Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
             """
             
             async for chunk in self.llm.astream(profile_prompt):
@@ -424,18 +628,70 @@ Finally, summarize your assessment and provide objective recommendations based o
                 body_type = body_type_part.split("\n")[0].strip()
                 state["user_profile"]["body_type"] = body_type
         
-        # Create full profile analysis
+        # Get previous data if available
+        previous_profile_assessment = None
+        previous_body_analysis = None
+        if state.get("previous_sections"):
+            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
+            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
+        
+        # Create full profile analysis with previous data
         profile_prompt = f"""
-        Analyze the following user profile information and body analysis to create 
-        a comprehensive fitness profile:
-        
-        User Profile: {json.dumps(state["user_profile"])}
-        
-        Body Analysis: {body_analysis if body_analysis else "No body analysis available"}
-        
-        Provide a comprehensive profile assessment that combines this information into a 
-        cohesive assessment for the user. Focus on how their body composition, structure,
-        and goals align to create actionable fitness recommendations.
+            [Persona]
+            You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
+
+            [Task]
+            Analyze the client's current profile data and body analysis, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes, improvements, and areas needing attention.
+
+            [Context]
+            --- CURRENT CLIENT PROFILE ---
+            {json.dumps(state["user_profile"])}
+
+            --- CURRENT BODY ANALYSIS ---
+            {body_analysis if body_analysis else "No body analysis available"}
+
+            {f'''--- PREVIOUS ASSESSMENTS ---
+            Previous Profile Assessment:
+            {previous_profile_assessment}
+
+            Previous Body Analysis:
+            {previous_body_analysis}
+            ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
+
+            [Instructions]
+            1. Create a clear, structured assessment with the following sections:
+            - Current fitness status overview
+            - Analysis of body composition and structure 
+            - Alignment between client's goals and current physical state
+            - Realistic timeframes for achieving stated goals
+            - Key focus areas for improvement
+
+            2. {f'''Progress Comparison Analysis:
+            - Compare current measurements/stats with previous assessment
+            - Identify specific improvements in body composition, posture, or muscle development
+            - Quantify changes in weight, muscle mass, and body fat percentage when possible
+            - Highlight areas showing good progress
+            - Identify areas still requiring targeted work
+            - Analyze if progress is aligned with previously stated goals
+            ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
+
+            3. Professional tone:
+            - Be honest but encouraging
+            - Use precise, measurable language
+            - Avoid generic statements; be specific to this client
+            - Balance constructive feedback with positive reinforcement
+
+            4. Formatting guidelines:
+            - Use "## Profile Assessment" as the main section header
+            - Use only H3 ("###") headings for subsections
+            - NEVER use level 2 headings (##) for any subsection - only for the main section title
+            - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
+            - Use horizontal rules (---) to separate major sections
+            - Use bullet points for lists of recommendations
+            - Keep paragraphs concise and easy to read
+            - Always end your response with "---" (three dashes) as a separator
+
+            Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
         """
         
         response = await self.llm.ainvoke(profile_prompt)
@@ -454,19 +710,76 @@ Finally, summarize your assessment and provide objective recommendations based o
         if isinstance(state["user_profile"], dict):
             has_body_photos = "imagePaths" in state["user_profile"] and any(state["user_profile"].get("imagePaths", {}).values())
         
-        # No body analysis in the main flow to avoid await issues, only in stream method
-        # Instead, use standard profile analysis
+        # Get previous data if available
+        previous_profile_assessment = None
+        previous_body_analysis = None
+        if state.get("previous_sections"):
+            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
+            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
+        
+        # Check if we have body analysis data in the state
+        body_analysis = state.get("body_analysis")
+    
+        # Create profile analysis with or without body analysis
         profile_prompt = f"""
-        Analyze the user profile information and ensure it's complete for creating 
-        personalized health and fitness plans. Current profile: {state["user_profile"]}
-        
-        Based on the provided information, create a comprehensive profile assessment including:
-        1. An evaluation of their current fitness level
-        2. Analysis of their fitness goals and how achievable they are
-        3. How their dietary preferences align with their goals
-        4. Recommendations for their fitness journey
-        
-        Provide a professional and encouraging profile assessment based on this information.
+            [Persona]
+            You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
+
+            [Task]
+            Analyze the client's current profile data{", including body analysis," if body_analysis else ""} compare with any previous assessments, and create a comprehensive fitness profile that highlights changes, improvements, and areas needing attention.
+
+            [Context]
+            --- CURRENT CLIENT PROFILE ---
+            {json.dumps(state["user_profile"])}
+            
+            {f'''--- CURRENT BODY ANALYSIS ---
+            {body_analysis}
+            ''' if body_analysis else '--- NO BODY ANALYSIS AVAILABLE ---'}
+
+            {f'''--- PREVIOUS ASSESSMENTS ---
+            Previous Profile Assessment:
+            {previous_profile_assessment}
+
+            Previous Body Analysis:
+            {previous_body_analysis}
+            ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
+
+            [Instructions]
+            1. Begin your assessment with the section header "## Profile Assessment"
+            
+            2. Create a structured assessment with these subsections:
+               - Current fitness status overview based on provided metrics
+               - {("Analysis of body composition and structure based on the provided analysis" if body_analysis else "Analysis of client's fitness status based on provided profile information")}
+               - Alignment between client's goals and current physical state
+               - Realistic timeframes for achieving stated goals
+               - Key focus areas for improvement
+
+            3. {f'''Progress Comparison Analysis:
+               - Compare current measurements/stats with previous assessment
+               - {("Identify specific improvements in body composition, posture, or muscle development" if body_analysis else "Identify changes in weight, activity level, or other metrics")}
+               - {("Quantify changes in weight, muscle mass, and body fat percentage when possible" if body_analysis else "Evaluate progress based on available information")}
+               - Highlight areas showing good progress
+               - Identify areas still requiring targeted work
+               - Analyze if progress is aligned with previously stated goals
+            ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
+
+            4. Professional tone:
+               - Be honest but encouraging
+               - Use precise, measurable language
+               - Avoid generic statements; be specific to this client
+               - Balance constructive feedback with positive reinforcement
+
+            5. Formatting guidelines:
+               - Use "## Profile Assessment" as the ONLY level 2 (H2) heading in your response
+               - Use level 3 headings (###) for all subsections (e.g., "### Current Fitness Status", "### Goal Alignment")
+               - NEVER use level 2 headings (##) for any subsection - only for the main section title
+               - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
+               - Use horizontal rules (---) to separate major sections
+               - Use bullet points for lists of recommendations
+               - Keep paragraphs concise and easy to read
+               - Always end your response with "---" (three dashes) as a separator
+
+            Format your response as a comprehensive professional assessment that the client can use as a roadmap for their fitness journey.
         """
         
         # Use synchronous invoke for the __call__ method
@@ -484,33 +797,90 @@ Finally, summarize your assessment and provide objective recommendations based o
 class DietaryAgent:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4-1106-preview",
-            temperature=0.4,
+            model="gpt-4o",
+            temperature=0.2,
             streaming=True,
             callbacks=[StreamingStdOutCallbackHandler()]
         )
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream dietary recommendations"""
+        # Check if we have previous dietary plan and profile
+        previous_dietary_plan = None
+        previous_user_profile = None
+        
+        if state.get("previous_sections"):
+            previous_dietary_plan = state["previous_sections"].get("dietary_plan", "")
+        
+        # Get previous structured profile if available
+        if state.get("structured_user_profile") and state.get("previous_complete_response"):
+            previous_user_profile = json.dumps(state.get("structured_user_profile"))
+        
         diet_prompt = f"""
-        Create a comprehensive dietary plan based on the following user profile:
+            [Persona]
+            You are an elite nutritionist and dietary coach with expertise in personalized meal planning for fitness goals. You specialize in creating comprehensive nutrition plans that align with clients' training objectives.
+
+            [Task]
+            Create a detailed, personalized dietary plan based on the client's profile, body analysis, and fitness goals. If available, compare with previous dietary plans and profile data to ensure progression and appropriate adjustments.
+
+            [Context]
+            --- CURRENT CLIENT PROFILE ---
         {state["user_profile"]}
         
-        Generate a detailed meal plan including:
-        - Breakfast options
-        - Lunch options
-        - Dinner options
-        - Healthy snacks
-        
-        Key Considerations:
-        - Nutritional balance
-        - Calorie intake
-        - Hydration recommendations
-        - Electrolyte balance
-        - Fiber intake
-        - Specific dietary preferences
-        
-        Provide portion sizes, macro breakdown, and nutritional insights.
+            {f'''--- PREVIOUS CLIENT PROFILE ---
+            {previous_user_profile}
+            ''' if previous_user_profile else ''}
+
+            {f'''--- PREVIOUS DIETARY PLAN ---
+            {previous_dietary_plan}
+            ''' if previous_dietary_plan else '--- NO PREVIOUS DIETARY PLAN AVAILABLE ---'}
+
+            [Instructions]
+            1. Begin your response with the heading "## Dietary Plan"
+            
+            2. Create a structured meal plan with these components:
+            - Daily caloric and macronutrient targets based on client goals
+            - 3+ breakfast options with nutritional breakdown
+            - 3+ lunch options with nutritional breakdown
+            - 3+ dinner options with nutritional breakdown
+            - 2-3 healthy snack options
+            - Hydration and electrolyte recommendations
+
+            3. {f'''Profile and Plan Analysis:
+            - Note any significant changes in the client's profile (weight, goals, activity level, etc.)
+            - Analyze the effectiveness of the previous dietary plan in light of these changes
+            - Identify which aspects should be maintained or modified based on profile changes
+            - Recommend specific adjustments aligned with current goals and circumstances
+            - Introduce new meal options for variety while maintaining nutritional integrity
+            - Address any changed dietary preferences or restrictions
+            ''' if previous_dietary_plan or previous_user_profile else 'Include clear guidance on meal timing and portion control for a first-time plan.'}
+
+            4. Nutritional Insights:
+            - Use "### Nutritional Insights" as a subsection heading
+            - Explain how the plan supports specific fitness goals
+            - Provide guidance on adaptation based on training intensity
+            - Include information on key nutrients for recovery and performance
+            - Offer practical tips for meal preparation and adherence
+
+            5. Professional tone:
+            - Use precise nutritional terminology
+            - Provide specific portion sizes and measurements
+            - Balance evidence-based recommendations with practical implementation
+            - Be encouraging but realistic about dietary adherence
+            - Use standard markdown for lists and formatting
+
+            6. Formatting Guidelines:
+            - Use "## Dietary Plan" as the ONLY level 2 (H2) heading in your response
+            - Use level 3 headings (###) for all subsections (e.g., "### Meal Plan", "### Breakfast", "### Lunch", "### Profile and Plan Analysis")
+            - NEVER use level 2 headings (##) for any subsection - only for the main section title
+            - Include daily caloric and macronutrient targets based on client goals (use bold for calculations like **Protein = 150g**)
+            - Format food items in bold: **Food Item Name**
+            - Format macronutrient information in italics with this exact pattern: _Macros: Approximately 30g protein, 45g carbs, 15g fat_
+            - Use horizontal rules (---) to separate major sections
+            - Use bullet points for lists of recommendations
+            - Always end your response with "---" (three dashes) as a separator
+
+            Format your response as a comprehensive dietary plan that supports the client's fitness journey and can be practically implemented in daily life.
         """
         
         state["dietary_state"].is_streaming = True
@@ -524,25 +894,82 @@ class DietaryAgent:
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Generate a dietary plan based on user profile"""
+        # Check if we have previous dietary plan and profile
+        previous_dietary_plan = None
+        previous_user_profile = None
+        
+        if state.get("previous_sections"):
+            previous_dietary_plan = state["previous_sections"].get("dietary_plan", "")
+        
+        # Get previous structured profile if available
+        if state.get("structured_user_profile") and state.get("previous_complete_response"):
+            previous_user_profile = json.dumps(state.get("structured_user_profile"))
+        
         diet_prompt = f"""
-        Create a comprehensive dietary plan based on the following user profile:
+            [Persona]
+            You are an elite nutritionist and dietary coach with expertise in personalized meal planning for fitness goals. You specialize in creating comprehensive nutrition plans that align with clients' training objectives.
+
+            [Task]
+            Create a detailed, personalized dietary plan based on the client's profile, body analysis, and fitness goals. If available, compare with previous dietary plans and profile data to ensure progression and appropriate adjustments.
+
+            [Context]
+            --- CURRENT CLIENT PROFILE ---
         {state["user_profile"]}
         
-        Generate a detailed meal plan including:
-        - Breakfast options
-        - Lunch options
-        - Dinner options
-        - Healthy snacks
-        
-        Key Considerations:
-        - Nutritional balance
-        - Calorie intake
-        - Hydration recommendations
-        - Electrolyte balance
-        - Fiber intake
-        - Specific dietary preferences
-        
-        Provide portion sizes, macro breakdown, and nutritional insights.
+            {f'''--- PREVIOUS CLIENT PROFILE ---
+            {previous_user_profile}
+            ''' if previous_user_profile else ''}
+
+            {f'''--- PREVIOUS DIETARY PLAN ---
+            {previous_dietary_plan}
+            ''' if previous_dietary_plan else '--- NO PREVIOUS DIETARY PLAN AVAILABLE ---'}
+
+            [Instructions]
+            1. Begin your response with the heading "## Dietary Plan"
+            
+            2. Create a structured meal plan with these components:
+            - Daily caloric and macronutrient targets based on client goals
+            - 3+ breakfast options with nutritional breakdown
+            - 3+ lunch options with nutritional breakdown
+            - 3+ dinner options with nutritional breakdown
+            - 2-3 healthy snack options
+            - Hydration and electrolyte recommendations
+
+            3. {f'''Profile and Plan Analysis:
+            - Note any significant changes in the client's profile (weight, goals, activity level, etc.)
+            - Analyze the effectiveness of the previous dietary plan in light of these changes
+            - Identify which aspects should be maintained or modified based on profile changes
+            - Recommend specific adjustments aligned with current goals and circumstances
+            - Introduce new meal options for variety while maintaining nutritional integrity
+            - Address any changed dietary preferences or restrictions
+            ''' if previous_dietary_plan or previous_user_profile else 'Include clear guidance on meal timing and portion control for a first-time plan.'}
+
+            4. Nutritional Insights:
+            - Use "### Nutritional Insights" as a subsection heading
+            - Explain how the plan supports specific fitness goals
+            - Provide guidance on adaptation based on training intensity
+            - Include information on key nutrients for recovery and performance
+            - Offer practical tips for meal preparation and adherence
+
+            5. Professional tone:
+            - Use precise nutritional terminology
+            - Provide specific portion sizes and measurements
+            - Balance evidence-based recommendations with practical implementation
+            - Be encouraging but realistic about dietary adherence
+            - Use standard markdown for lists and formatting
+
+            6. Formatting Guidelines:
+            - Use "## Dietary Plan" as the ONLY level 2 (H2) heading in your response
+            - Use level 3 headings (###) for all subsections (e.g., "### Meal Plan", "### Breakfast", "### Lunch", "### Profile and Plan Analysis")
+            - NEVER use level 2 headings (##) for any subsection - only for the main section title
+            - Include daily caloric and macronutrient targets based on client goals (use bold for calculations like **Protein = 150g**)
+            - Format food items in bold: **Food Item Name**
+            - Format macronutrient information in italics with this exact pattern: _Macros: Approximately 30g protein, 45g carbs, 15g fat_
+            - Use horizontal rules (---) to separate major sections
+            - Use bullet points for lists of recommendations
+            - Always end your response with "---" (three dashes) as a separator
+
+            Format your response as a comprehensive dietary plan that supports the client's fitness journey and can be practically implemented in daily life.
         """
         
         response = self.llm.invoke(diet_prompt)
@@ -553,32 +980,90 @@ class DietaryAgent:
 class FitnessAgent:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4-1106-preview",
-            temperature=0.4,
+            model="gpt-4o",
+            temperature=0.2,
             streaming=True,
             callbacks=[StreamingStdOutCallbackHandler()]
         )
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream fitness recommendations"""
+        # Check if we have previous fitness plan and profile
+        previous_fitness_plan = None
+        previous_user_profile = None
+        
+        if state.get("previous_sections"):
+            previous_fitness_plan = state["previous_sections"].get("fitness_plan", "")
+        
+        # Get previous structured profile if available
+        if state.get("structured_user_profile") and state.get("previous_complete_response"):
+            previous_user_profile = json.dumps(state.get("structured_user_profile"))
+        
         fitness_prompt = f"""
-        Design a comprehensive fitness plan based on the user profile:
+        [Persona]
+        You are an elite fitness coach with expertise in periodization and progressive training programs. You specialize in creating personalized workout plans that adapt to clients' changing needs and level of progress.
+
+        [Task]
+        Design a comprehensive fitness program that addresses the client's specific goals, body composition, and fitness level. If previous data is available, build upon their progress with appropriate adaptations and progressions.
+
+        [Context]
+        --- CURRENT CLIENT PROFILE ---
         {state["user_profile"]}
         
-        Plan should include:
-        - Warm-up routines
-        - Main workout plan
-        - Cool-down exercises
-        - Progress tracking recommendations
+        {f'''--- PREVIOUS CLIENT PROFILE ---
+        {previous_user_profile}
+        ''' if previous_user_profile else ''}
+
+        {f'''--- PREVIOUS FITNESS PLAN ---
+        {previous_fitness_plan}
+        ''' if previous_fitness_plan else '--- NO PREVIOUS FITNESS PLAN AVAILABLE ---'}
+
+        [Instructions]
+        1. Begin your response with the heading "## Fitness Plan"
         
-        Considerations:
-        - Fitness goals
-        - Current fitness level
-        - Equipment availability
-        - Time constraints
-        - Injury prevention
-        
-        Provide detailed exercise descriptions, sets, reps, and intensity levels.
+        2. Create a structured fitness program with these components:
+           - Detailed warm-up protocols (10-15 minutes)
+           - Main workout plan with specific splits based on goals
+           - Exercise selection with clear sets, reps, and intensity guidelines
+           - Progressive overload strategy over 4-8 weeks
+           - Recovery protocols and rest day recommendations
+           - Cool-down and mobility work
+
+        3. {f'''Program Progression Analysis:
+           - Identify changes in the client's physical profile or goals
+           - Evaluate which exercises produced the best results in the previous plan
+           - Recommend appropriate progression in volume, intensity, or complexity
+           - Introduce new exercise variations to prevent plateaus
+           - Adjust training frequency or split based on progress and current capacity
+           - Address any form corrections or technique improvements needed
+        ''' if previous_fitness_plan or previous_user_profile else 'Include clear guidance on proper form and technique for beginners.'}
+
+        4. Implementation Strategy:
+           - Provide a weekly schedule template
+           - Explain how to track progress (weights, reps, perceived exertion)
+           - Include adaptation guidelines based on rate of progress
+           - Offer alternatives for common equipment limitations
+           - Address injury prevention specific to chosen exercises
+
+        5. Professional tone:
+           - Use precise exercise terminology
+           - Provide specific measurements for progress tracking
+           - Balance scientific principles with practical application
+           - Be encouraging while emphasizing proper technique and safety
+
+        6. Formatting Guidelines:
+           - Use "## Fitness Plan" as the ONLY level 2 (H2) heading in your response
+           - Use level 3 headings (###) for all subsections like "### Warm-Up Protocol", "### Main Workout Plan", etc.
+           - NEVER use level 2 headings (##) for any subsection - only for the main section title
+           - Format workout days in bold: **Day 1: Upper Body**
+           - Use standard bullet points for exercises within each day
+           - Format sets and reps consistently: "- Bench Press: 3 sets of 8-10 reps"
+           - Format measurements and calculations in bold: **BMR = 1500 calories/day**
+           - Use horizontal rules (---) to separate major sections
+           - Include proper spacing between sections for readability
+           - Always end your response with "---" (three dashes) as a separator
+
+        Format your response as a comprehensive fitness plan that supports the client's specific goals and can be realistically implemented with their available resources.
         """
         
         state["fitness_state"].is_streaming = True
@@ -592,24 +1077,82 @@ class FitnessAgent:
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Generate a fitness plan based on user profile"""
+        # Check if we have previous fitness plan and profile
+        previous_fitness_plan = None
+        previous_user_profile = None
+        
+        if state.get("previous_sections"):
+            previous_fitness_plan = state["previous_sections"].get("fitness_plan", "")
+        
+        # Get previous structured profile if available
+        if state.get("structured_user_profile") and state.get("previous_complete_response"):
+            previous_user_profile = json.dumps(state.get("structured_user_profile"))
+        
         fitness_prompt = f"""
-        Design a comprehensive fitness plan based on the user profile:
+        [Persona]
+        You are an elite fitness coach with expertise in periodization and progressive training programs. You specialize in creating personalized workout plans that adapt to clients' changing needs and level of progress.
+
+        [Task]
+        Design a comprehensive fitness program that addresses the client's specific goals, body composition, and fitness level. If previous data is available, build upon their progress with appropriate adaptations and progressions.
+
+        [Context]
+        --- CURRENT CLIENT PROFILE ---
         {state["user_profile"]}
         
-        Plan should include:
-        - Warm-up routines
-        - Main workout plan
-        - Cool-down exercises
-        - Progress tracking recommendations
+        {f'''--- PREVIOUS CLIENT PROFILE ---
+        {previous_user_profile}
+        ''' if previous_user_profile else ''}
+
+        {f'''--- PREVIOUS FITNESS PLAN ---
+        {previous_fitness_plan}
+        ''' if previous_fitness_plan else '--- NO PREVIOUS FITNESS PLAN AVAILABLE ---'}
+
+        [Instructions]
+        1. Begin your response with the heading "## Fitness Plan"
         
-        Considerations:
-        - Fitness goals
-        - Current fitness level
-        - Equipment availability
-        - Time constraints
-        - Injury prevention
-        
-        Provide detailed exercise descriptions, sets, reps, and intensity levels.
+        2. Create a structured fitness program with these components:
+           - Detailed warm-up protocols (10-15 minutes)
+           - Main workout plan with specific splits based on goals
+           - Exercise selection with clear sets, reps, and intensity guidelines
+           - Progressive overload strategy over 4-8 weeks
+           - Recovery protocols and rest day recommendations
+           - Cool-down and mobility work
+
+        3. {f'''Program Progression Analysis:
+           - Identify changes in the client's physical profile or goals
+           - Evaluate which exercises produced the best results in the previous plan
+           - Recommend appropriate progression in volume, intensity, or complexity
+           - Introduce new exercise variations to prevent plateaus
+           - Adjust training frequency or split based on progress and current capacity
+           - Address any form corrections or technique improvements needed
+        ''' if previous_fitness_plan or previous_user_profile else 'Include clear guidance on proper form and technique for beginners.'}
+
+        4. Implementation Strategy:
+           - Provide a weekly schedule template
+           - Explain how to track progress (weights, reps, perceived exertion)
+           - Include adaptation guidelines based on rate of progress
+           - Offer alternatives for common equipment limitations
+           - Address injury prevention specific to chosen exercises
+
+        5. Professional tone:
+           - Use precise exercise terminology
+           - Provide specific measurements for progress tracking
+           - Balance scientific principles with practical application
+           - Be encouraging while emphasizing proper technique and safety
+
+        6. Formatting Guidelines:
+           - Use "## Fitness Plan" as the ONLY level 2 (H2) heading in your response
+           - Use level 3 headings (###) for all subsections like "### Warm-Up Protocol", "### Main Workout Plan", etc.
+           - NEVER use level 2 headings (##) for any subsection - only for the main section title
+           - Format workout days in bold: **Day 1: Upper Body**
+           - Use standard bullet points for exercises within each day
+           - Format sets and reps consistently: "- Bench Press: 3 sets of 8-10 reps"
+           - Format measurements and calculations in bold: **BMR = 1500 calories/day**
+           - Use horizontal rules (---) to separate major sections
+           - Include proper spacing between sections for readability
+           - Always end your response with "---" (three dashes) as a separator
+
+        Format your response as a comprehensive fitness plan that supports the client's specific goals and can be realistically implemented with their available resources.
         """
         
         response = self.llm.invoke(fitness_prompt)
@@ -631,6 +1174,9 @@ class QueryAgent:
         if not state["current_query"]:
             return
         
+        # Get previous sections if available
+        previous_sections = state.get("previous_sections", {})
+        
         # Simple query handling without routing logic
         query_prompt = f"""
         User Query: {state["current_query"]}
@@ -640,12 +1186,24 @@ class QueryAgent:
         Fitness Plan: {state["fitness_state"].content}
         User Profile: {state["user_profile"]}
         
+        {f'''Previous Data (for reference):
+        Previous Profile Assessment: {previous_sections.get("profile_assessment", "")}
+        Previous Dietary Plan: {previous_sections.get("dietary_plan", "")}
+        Previous Fitness Plan: {previous_sections.get("fitness_plan", "")}
+        ''' if previous_sections else ''}
+        
         Provide a detailed, personalized response to the user's question.
         Ensure the answer is:
         - Specific to their health and fitness plan
         - Actionable
         - Based on the generated plans
         - Considers all relevant aspects of their fitness and dietary plans
+        
+        {f'''If the user's question relates to changes over time or progress:
+        - Compare their previous and current plans
+        - Highlight improvements or changes
+        - Explain how their approach has evolved based on their progress
+        ''' if previous_sections else ''}
         """
         
         async for chunk in self.llm.astream(query_prompt):
@@ -657,6 +1215,9 @@ class QueryAgent:
         if not state["current_query"]:
             return state
         
+        # Get previous sections if available
+        previous_sections = state.get("previous_sections", {})
+        
         # Simple query handling without routing logic
         query_prompt = f"""
         User Query: {state["current_query"]}
@@ -666,12 +1227,24 @@ class QueryAgent:
         Fitness Plan: {state["fitness_state"].content}
         User Profile: {state["user_profile"]}
         
+        {f'''Previous Data (for reference):
+        Previous Profile Assessment: {previous_sections.get("profile_assessment", "")}
+        Previous Dietary Plan: {previous_sections.get("dietary_plan", "")}
+        Previous Fitness Plan: {previous_sections.get("fitness_plan", "")}
+        ''' if previous_sections else ''}
+        
         Provide a detailed, personalized response to the user's question.
         Ensure the answer is:
         - Specific to their health and fitness plan
         - Actionable
         - Based on the generated plans
         - Considers all relevant aspects of their fitness and dietary plans
+        
+        {f'''If the user's question relates to changes over time or progress:
+        - Compare their previous and current plans
+        - Highlight improvements or changes
+        - Explain how their approach has evolved based on their progress
+        ''' if previous_sections else ''}
         """
         
         response = self.llm.invoke(query_prompt)
@@ -707,30 +1280,25 @@ class HeadCoachAgent:
         # If not already generated, create the structured output with all components
         yield "# Your Personalized Fitness Plan\n\n"
         
-        # Add profile assessment
-        yield "## Profile Assessment\n\n"
+        # Add profile assessment (no need to add header, it's in the content)
         yield state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
         yield "\n\n"
         
-        # Include body analysis if available
+        # Include body analysis if available (no need to add header, it's in the content)
         if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
-            yield "## Body Composition Analysis\n\n"
             yield state["body_analysis"]
             yield "\n\n"
         
-        # Add dietary plan
-        yield "## Dietary Plan\n\n"
+        # Add dietary plan (no need to add the title since it's in the content)
         yield state["dietary_state"].content
         yield "\n\n"
         
-        # Add fitness plan
-        yield "## Fitness Plan\n\n"
+        # Add fitness plan (no need to add the title since it's in the content)
         yield state["fitness_state"].content
         yield "\n\n"
 
         # Add progress comparison if available
         if state.get("progress_comparison"):
-            yield "## Progress Comparison\n\n"
             yield state["progress_comparison"]
             yield "\n\n"
         
@@ -741,38 +1309,79 @@ class HeadCoachAgent:
     def compare_responses(self, previous_overview, current_overview, user_profile):
         """Compare previous and current fitness overviews to identify progress"""
         if not previous_overview or not current_overview:
+            print("\n\n==========================================")
+            print("No previous or current overview to compare")
+            print("==========================================\n\n")
             return "This is your first fitness assessment. Future assessments will include progress tracking."
             
         comparison_prompt = f"""
-        You are a fitness coach analyzing a client's progress over time.
-        
-        Compare the previous fitness assessment with the current one to identify changes and progress.
-        Focus on significant changes in:
-        1. Body statistics (weight, measurements, body fat percentage)
-        2. Fitness level indicators
-        3. Dietary improvements
-        4. Workout performance
-        
-        Previous Assessment:
+        [Persona]
+        You are an elite fitness coach who specializes in analyzing client progress over time. You have exceptional abilities in recognizing changes in fitness metrics, body composition, dietary habits, and workout performance.
+
+        [Task]
+        Compare and analyze the client's previous fitness assessment with their current assessment and create a detailed progress comparison that highlights improvements, changes, and areas that still need work.
+
+        [Context]
+        --- PREVIOUS ASSESSMENT ---
         {previous_overview}
         
-        Current Assessment:
+        --- CURRENT ASSESSMENT ---
         {current_overview}
         
-        Current user Profile used for the currect overview:
-        {json.dumps(user_profile, indent=2)}
+        --- USER PROFILE ---
+        {json.dumps(user_profile) if isinstance(user_profile, dict) else user_profile}
+
+        [Instructions]
         
-        Provide a concise, encouraging summary of their progress. Include:
-        - Key improvements
-        - Areas still needing focus
-        - Specific metrics that have changed
-        - Recommendations based on this progress
-        
-        Format the response in a motivating way that acknowledges achievements while encouraging continued effort.
+        1. Begin your response with the heading "## Progress Tracking"
+
+        2. Compare these specific aspects between the two assessments:
+           - Body metrics (weight, BMI, body fat percentage)
+           - Dietary compliance and nutrition habits
+           - Workout performance and consistency
+           - Progress toward stated fitness goals
+           - Changes in recommendations or approach
+
+        3. Highlight improvements:
+           - Format specific improvements in bold (e.g., **Weight decreased by 2kg**)
+           - Quantify progress whenever possible (e.g., "Increased workout frequency from 2 to 4 days per week")
+           - Acknowledge both major and minor positive changes
+
+        4. Identify remaining challenges:
+           - Areas where progress has been slow or nonexistent
+           - New issues that have emerged since the last assessment
+           - Potential barriers to further improvement
+
+        5. Provide context for the progress:
+           - Whether progress is aligned with expected timeline
+           - If the rate of improvement is appropriate for the client's situation
+           - How the progress compares to typical results
+
+        6. Formatting Guidelines:
+        - Use "## Progress Tracking" as the ONLY level 2 (H2) heading in your response
+        - Use level 3 headings (###) for all other (sub)sections.
+        - NEVER use level 2 headings (##) for any subsection - only for the main section title
+        - Use consistent formatting for all sections.
+        - Use ### for all section titles and #### for any subsections if needed.
+        - Group your analysis into 3-5 main sections with clear H3 headings.
+        - Always end your response with "---" (three dashes) as a separator
+
+        Format your response as an insightful progress analysis that motivates the client while providing an honest assessment of their fitness journey.
         """
+        
+        print("\n\n==========================================")
+        print(f"Generating progress comparison")
+        print(f"Previous overview length: {len(previous_overview)}")
+        print(f"Current overview length: {len(current_overview)}")
+        print("==========================================\n\n")
         
         # Use the LLM to generate the comparison
         response = self.llm.invoke(comparison_prompt)
+        
+        print("\n\n==========================================")
+        print(f"Completed progress comparison. Result length: {len(response.content)}")
+        print("==========================================\n\n")
+        
         return response.content
     
     def __call__(self, state: WorkoutState) -> WorkoutState:
@@ -790,50 +1399,89 @@ class HeadCoachAgent:
         else:
             image_timestamps = {}
         
-        # Add profile assessment
-        complete_response = "## Profile Assessment\n\n"
+        # Start building the complete response
+        complete_response = ""
+        
+        # First, generate progress comparison if we have previous data
+        progress_comparison = None
+        try:
+            # Use the complete previous response for comparison - this is more reliable than parsed sections
+            if "previous_complete_response" in state and state["previous_complete_response"]:
+                print("\n\n==========================================")
+                print(f"Generating progress comparison")
+                print(f"Previous overview length: {len(state['previous_complete_response'])}")
+                
+                # Build current overview for comparison
+                current_overview = ""
+                
+                # Add profile assessment
+                current_overview += state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2) + "\n\n"
+                
+                # Add body analysis if available
+                if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
+                    current_overview += state["body_analysis"] + "\n\n"
+                
+                # Add dietary plan
+                current_overview += state["dietary_state"].content + "\n\n"
+                
+                # Add fitness plan
+                current_overview += state["fitness_state"].content + "\n\n"
+                
+                print(f"Current overview length: {len(current_overview)}")
+                print("==========================================\n\n")
+                
+                # Generate progress comparison using complete previous response
+                progress_comparison = self.compare_responses(
+                    state["previous_complete_response"],
+                    current_overview,
+                    user_profile_data
+                )
+                
+                print(f"\n\n==========================================")
+                print(f"Completed progress comparison. Result length: {len(progress_comparison)}")
+                print(f"==========================================\n\n")
+            
+            # Add progress comparison at the beginning if available
+            if progress_comparison:
+                print("\n\n==========================================")
+                print(f"Adding progress comparison to the beginning (length: {len(progress_comparison)})")
+                print("==========================================\n\n")
+                complete_response += progress_comparison
+                complete_response += "\n\n---\n\n"
+                state["progress_comparison"] = progress_comparison
+            else:
+                # No previous response available
+                print("\n\n==========================================")
+                print("No previous response data found for comparison")
+                print("==========================================\n\n")
+                state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
+                complete_response += "## Progress Tracking\n\n"
+                complete_response += state["progress_comparison"]
+                complete_response += "\n\n---\n\n"
+        except Exception as e:
+            print("\n\n==========================================")
+            print(f"Error generating progress comparison: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            print("==========================================\n\n")
+            # Continue without the comparison
+            complete_response += "# Your Personalized Fitness Plan\n\n"
+        
+        # Now add the rest of the sections (no need to add headers, they're in the content)
         complete_response += state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
         
         # Include body analysis if available
         if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
-            complete_response += "\n\n## Body Composition Analysis\n\n"
+            complete_response += "\n\n"
             complete_response += state["body_analysis"]
         
-        # Add dietary plan
-        complete_response += "\n\n## Dietary Plan\n\n"
+        # Add dietary plan (no need to add the title since it's in the content)
+        complete_response += "\n\n"
         complete_response += state["dietary_state"].content
         
-        # Add fitness plan
-        complete_response += "\n\n## Fitness Plan\n\n"
+        # Add fitness plan (no need to add the title since it's in the content)
+        complete_response += "\n\n"
         complete_response += state["fitness_state"].content
-        
-        try:
-            # Try to get previous complete_response from the same thread_id
-            # This should be done by the calling code that has access to the app instance
-            # and can use app.get_state_history()
-            if "previous_complete_response" in state and state["previous_complete_response"]:
-                previous_response = state["previous_complete_response"]
-                
-                # Generate progress comparison
-                progress_comparison = self.compare_responses(
-                    previous_response,
-                    complete_response,
-                    user_profile_data
-                )
-                
-                # Add progress comparison to complete response
-                if progress_comparison:
-                    complete_response += "\n\n## Progress Comparison\n\n"
-                    complete_response += progress_comparison
-                    state["progress_comparison"] = progress_comparison
-            else:
-                # No previous response available
-                state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
-                complete_response += "\n\n## Progress Comparison\n\n"
-                complete_response += state["progress_comparison"]
-        except Exception as e:
-            print(f"Error generating progress comparison: {str(e)}")
-            # Continue without the comparison
         
         # Final message
         complete_response += "\n\n---\n\n"
