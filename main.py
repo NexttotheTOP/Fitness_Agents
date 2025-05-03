@@ -9,6 +9,8 @@ import uuid
 import logging
 from datetime import datetime
 import traceback
+import asyncio
+import re
 
 load_dotenv()
 
@@ -104,18 +106,167 @@ class FitnessQueryRequest(BaseModel):
     thread_id: str
     query: str
 
-class FitnessRAGQueryRequest(BaseModel):
-    query: str
-    user_id: Optional[str] = None
-    thread_id: Optional[str] = None
-
 # Store active sessions
 active_sessions: Dict[str, Any] = {}
 
 @api.post("/ask")
 async def ask_question(question: Question):
-    result = qa_app.invoke(input={"question": question.question})
-    return {"response": result}
+    """
+    Process a question and stream the response along with processing steps and sources.
+    
+    The streaming response follows this format:
+    
+    1. type: 'step' - Shows processing steps and routing decisions
+       example: {"type": "step", "content": "Retrieving documents from vector database..."}
+       
+    2. type: 'source' - Information about a source document used for the answer
+       example: {"type": "source", "content": {"content": "Document snippet...", "metadata": {...}}}
+       
+    3. type: 'answer' - The actual answer content, streamed in chunks
+       example: {"type": "answer", "content": "Part of the answer text..."}
+       
+    4. type: 'sources_summary' - Summary of all sources at the end
+       example: {"type": "sources_summary", "content": [{"content": "...", "metadata": {...}}, ...]}
+       
+    5. type: 'error' - Any error information
+       example: {"type": "error", "content": "Error message"}
+       
+    This endpoint returns text/event-stream content which can be consumed
+    by the EventSource API in browsers or any SSE (Server-Sent Events) client.
+    """
+    try:
+        # Direct streaming from LangGraph
+        async def stream_langgraph_response():
+            try:
+                # First get the routing decision and initial processing
+                initial_state = {"question": question.question, "documents": [], "generation": "", "web_search": False}
+                
+                # Import the necessary components
+                from graph.graph import route_question, workflow
+                from graph.nodes.generate import generate_streaming
+                from graph.consts import RETRIEVE, GRADE_DOCUMENTS, GENERATE, WEBSEARCH
+                from graph.nodes import retrieve, grade_documents, web_search
+                
+                # Stream the step information
+                yield f"data: {json.dumps({'type': 'step', 'content': 'Starting query processing...'})}\n\n"
+                
+                # Get routing decision
+                route = route_question(initial_state)
+                yield f"data: {json.dumps({'type': 'step', 'content': f'Routing decision: {route}'})}\n\n"
+                
+                # Initialize state based on routing
+                state = initial_state.copy()
+                
+                # Process based on routing decision
+                sources = []
+                if route == RETRIEVE:
+                    # Retrieve documents
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Retrieving documents from vector database...'})}\n\n"
+                    state = retrieve(state)
+                    
+                    # Add source information
+                    if state["documents"]:
+                        for i, doc in enumerate(state["documents"]):
+                            try:
+                                # Extract source metadata
+                                metadata = doc.metadata.copy() if hasattr(doc, 'metadata') else {}
+                                
+                                # Format source information from RAG
+                                source_info = {
+                                    "content": doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content,
+                                    "metadata": {
+                                        "title": metadata.get("title", "Unknown Title"),
+                                        "author": metadata.get("author", "Unknown Author"),
+                                        "source": metadata.get("source", "Fitness Knowledge Base"),
+                                        "video_id": metadata.get("video_id", ""),
+                                        "collection": metadata.get("collection", "Fitness Content")
+                                    }
+                                }
+                                sources.append(source_info)
+                                
+                                # Create a more user-friendly display for the source
+                                source_display = {
+                                    "content": source_info["content"],
+                                    "title": metadata.get("title", "Unknown Title"),
+                                    "author": metadata.get("author", "Unknown Author"),
+                                    "source_type": "YouTube Video" if metadata.get("video_id") else "Fitness Knowledge Base",
+                                    "url": metadata.get("source", "")
+                                }
+                                
+                                # Stream each source
+                                yield f"data: {json.dumps({'type': 'source', 'content': source_display})}\n\n"
+                            except Exception as e:
+                                logging.error(f"Error processing source document: {e}")
+                    
+                    # Grade documents
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Grading retrieved documents for relevance...'})}\n\n"
+                    state = grade_documents(state)
+                    
+                    # Check if we need web search
+                    if state["web_search"]:
+                        # Use web search
+                        yield f"data: {json.dumps({'type': 'step', 'content': 'Some documents not relevant. Adding web search results...'})}\n\n"
+                        state = web_search(state)
+                        
+                        # Add web search source
+                        if len(state["documents"]) > len(sources):
+                            for i in range(len(sources), len(state["documents"])):
+                                web_source = {
+                                    "content": state["documents"][i].page_content[:200] + "..." if len(state["documents"][i].page_content) > 200 else state["documents"][i].page_content,
+                                    "metadata": {"source": "web_search"}
+                                }
+                                sources.append(web_source)
+                                yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
+                    
+                elif route == WEBSEARCH:
+                    # Use web search directly
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Using web search to find information...'})}\n\n"
+                    state = web_search(state)
+                    
+                    # Add web search source
+                    if state["documents"]:
+                        for i, doc in enumerate(state["documents"]):
+                            try:
+                                web_source = {
+                                    "content": doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content,
+                                    "title": "Web Search Result",
+                                    "author": "Web",
+                                    "source_type": "Web Search",
+                                    "url": ""
+                                }
+                                sources.append({"content": web_source["content"], "metadata": {"source": "web_search"}})
+                                yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
+                            except Exception as e:
+                                logging.error(f"Error processing web search result: {e}")
+                
+                # Stream that we're generating the answer
+                yield f"data: {json.dumps({'type': 'step', 'content': 'Generating response based on gathered information...'})}\n\n"
+                
+                # Stream the generation with answer type
+                async for chunk in generate_streaming(state):
+                    if chunk:
+                        yield f"data: {json.dumps({'type': 'answer', 'content': chunk})}\n\n"
+                
+                # Complete source summary at end
+                yield f"data: {json.dumps({'type': 'sources_summary', 'content': sources})}\n\n"
+                
+            except Exception as e:
+                logging.error(f"Error in ask streaming: {str(e)}")
+                logging.error(traceback.format_exc())
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            finally:
+                yield "data: [DONE]\n\n"
+        
+        # Return as streaming response
+        return StreamingResponse(
+            stream_langgraph_response(),
+            media_type="text/event-stream"
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in ask endpoint: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api.post("/workout/variation")
 async def generate_workout_variation(request: Request):
@@ -332,43 +483,6 @@ async def process_fitness_query(query: FitnessQueryRequest):
     except Exception as e:
         logging.error(f"Error processing query for thread {thread_id}: {str(e)}")
         logging.error(f"Query: {query.query}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api.post("/fitness/rag-query")
-async def query_fitness_knowledge(query: FitnessRAGQueryRequest):
-    """Directly query the fitness knowledge base using RAG"""
-    try:
-        if not rag_system:
-            raise HTTPException(status_code=503, detail="RAG system not available")
-        
-        # Get result from RAG system
-        result = rag_system({"query": query.query})
-        
-        # Extract source information
-        sources = []
-        if "source_documents" in result:
-            sources = [
-                {
-                    "title": doc.metadata.get("title", "Unknown"),
-                    "author": doc.metadata.get("author", "Unknown"),
-                    "source": doc.metadata.get("source", "Unknown"),
-                    "snippet": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
-                }
-                for doc in result["source_documents"]
-            ]
-        
-        return {
-            "answer": result.get("result", "No answer found"),
-            "sources": sources,
-            "query": query.query,
-            "user_id": query.user_id,
-            "thread_id": query.thread_id
-        }
-    
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logging.error(f"Error querying RAG system: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api.get("/fitness/session/{thread_id}")

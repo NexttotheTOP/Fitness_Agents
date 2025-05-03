@@ -18,8 +18,21 @@ llm = ChatOpenAI(temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"))
 structured_llm_router = llm.with_structured_output(RouteQuery)
 
 system = """You are an expert at routing a user question to a vectorstore or web search.
-The vectorstore contains documents related to agents, prompt engineering, and adversarial attacks.
-Use the vectorstore for questions on these topics. For all else, use web-search."""
+
+The vectorstore contains documents related to fitness, workout routines, nutrition, and exercise techniques from popular fitness YouTubers including:
+- Jeff Nippard
+- AthleanX (Jeff Cavaliere)
+- Renaissance Periodization (Dr. Mike Israetel)
+
+Use the vectorstore for ANY questions related to:
+- Workout routines and programming
+- Exercise techniques and form
+- Muscle growth and strength training
+- Fitness nutrition and diet advice
+- Weight loss and body composition
+- General fitness concepts and principles
+
+Only use web-search if the question is completely unrelated to fitness or requires very recent/current information that wouldn't be in the vectorstore."""
 route_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", system),
