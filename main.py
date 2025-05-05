@@ -762,5 +762,9 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_shutdown)  # Ctrl+C
     signal.signal(signal.SIGTERM, handle_shutdown)  # kill command
     
+    # Get port from environment variable or use 8080 as default (Railway's expected port)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting server on port {port}")
+    
     # Run the server
-    uvicorn.run(api, host="0.0.0.0", port=8000)
+    uvicorn.run(api, host="0.0.0.0", port=port)
