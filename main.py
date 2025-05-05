@@ -79,6 +79,8 @@ rag_system = init_rag_system()
 # Create request models
 class Question(BaseModel):
     question: str
+    user_id: Optional[str] = None
+    thread_id: Optional[str] = None
 
 class FitnessProfileRequest(BaseModel):
     user_id: Optional[str] = None
@@ -131,21 +133,60 @@ async def ask_question(question: Question):
     5. type: 'error' - Any error information
        example: {"type": "error", "content": "Error message"}
        
+    6. type: 'metadata' - Metadata about the conversation
+       example: {"type": "metadata", "content": {"thread_id": "abc123", "user_id": "user456"}}
+       
     This endpoint returns text/event-stream content which can be consumed
     by the EventSource API in browsers or any SSE (Server-Sent Events) client.
     """
     try:
+        # Generate user_id if not provided
+        user_id = question.user_id or str(uuid.uuid4())
+        
+        # Generate thread_id if not provided (new conversation)
+        thread_id = question.thread_id or str(uuid.uuid4())
+        
+        # Import conversation memory functions
+        from graph.conversation_memory import get_conversation_history, store_conversation
+        
+        # Retrieve existing conversation history
+        conversation_history = []
+        if thread_id:
+            try:
+                conversation_history = get_conversation_history(thread_id) or []
+                logging.info(f"Retrieved conversation history for thread {thread_id}, {len(conversation_history)} messages")
+            except Exception as e:
+                logging.error(f"Error retrieving conversation history: {e}")
+        
+        # Add current question to history
+        conversation_history.append({
+            "role": "user", 
+            "content": question.question, 
+            "timestamp": datetime.now().isoformat()
+        })
+        
         # Direct streaming from LangGraph
         async def stream_langgraph_response():
             try:
                 # First get the routing decision and initial processing
-                initial_state = {"question": question.question, "documents": [], "generation": "", "web_search": False}
+                initial_state = {
+                    "question": question.question, 
+                    "documents": [], 
+                    "generation": "", 
+                    "web_search": False,
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "conversation_history": conversation_history
+                }
                 
                 # Import the necessary components
                 from graph.graph import route_question, workflow
                 from graph.nodes.generate import generate_streaming
                 from graph.consts import RETRIEVE, GRADE_DOCUMENTS, GENERATE, WEBSEARCH
                 from graph.nodes import retrieve, grade_documents, web_search
+                
+                # Collection for answer chunks
+                answer_content = ""
                 
                 # Stream the step information
                 yield f"data: {json.dumps({'type': 'step', 'content': 'Starting query processing...'})}\n\n"
@@ -164,51 +205,56 @@ async def ask_question(question: Question):
                     yield f"data: {json.dumps({'type': 'step', 'content': 'Retrieving documents from vector database...'})}\n\n"
                     state = retrieve(state)
                     
-                    # Add source information
+                    # Debug logging for documents
+                    doc_count = len(state.get("documents", []))
+                    logging.info(f"Retrieved {doc_count} documents from vector database")
+                    
+                    # Grade documents
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Grading retrieved documents for relevance...'})}\n\n"
+                    pre_grade_docs = len(state.get("documents", []))
+                    state = grade_documents(state)
+                    post_grade_docs = len(state.get("documents", []))
+                    logging.info(f"Document grading: {pre_grade_docs} before, {post_grade_docs} after")
+                    
+                    # Process source information
                     if state["documents"]:
+                        logging.info(f"Processing {len(state['documents'])} graded documents for source information")
                         for i, doc in enumerate(state["documents"]):
                             try:
                                 # Extract source metadata
                                 metadata = doc.metadata.copy() if hasattr(doc, 'metadata') else {}
                                 
-                                # Format source information from RAG
+                                # Format source
                                 source_info = {
-                                    "content": doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content,
-                                    "metadata": {
-                                        "title": metadata.get("title", "Unknown Title"),
-                                        "author": metadata.get("author", "Unknown Author"),
-                                        "source": metadata.get("source", "Fitness Knowledge Base"),
-                                        "video_id": metadata.get("video_id", ""),
-                                        "collection": metadata.get("collection", "Fitness Content")
-                                    }
-                                }
-                                sources.append(source_info)
-                                
-                                # Create a more user-friendly display for the source
-                                source_display = {
-                                    "content": source_info["content"],
+                                    "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
                                     "title": metadata.get("title", "Unknown Title"),
                                     "author": metadata.get("author", "Unknown Author"),
-                                    "source_type": "YouTube Video" if metadata.get("video_id") else "Fitness Knowledge Base",
+                                    "source_type": metadata.get("video_id") and "YouTube Video" or "Fitness Knowledge Base",
                                     "url": metadata.get("source", "")
                                 }
                                 
+                                # Add to sources collection for summary
+                                sources.append({
+                                    "content": source_info["content"],
+                                    "metadata": {
+                                        "title": source_info["title"],
+                                        "author": source_info["author"],
+                                        "source": metadata.get("source", ""),
+                                        "source_type": source_info["source_type"]
+                                    }
+                                })
+                                
                                 # Stream each source
-                                yield f"data: {json.dumps({'type': 'source', 'content': source_display})}\n\n"
+                                yield f"data: {json.dumps({'type': 'source', 'content': source_info})}\n\n"
                             except Exception as e:
-                                logging.error(f"Error processing source document: {e}")
-                    
-                    # Grade documents
-                    yield f"data: {json.dumps({'type': 'step', 'content': 'Grading retrieved documents for relevance...'})}\n\n"
-                    state = grade_documents(state)
+                                logging.error(f"Error processing source document {i}: {e}")
                     
                     # Check if we need web search
                     if state["web_search"]:
-                        # Use web search
                         yield f"data: {json.dumps({'type': 'step', 'content': 'Some documents not relevant. Adding web search results...'})}\n\n"
                         state = web_search(state)
                         
-                        # Add web search source
+                        # Add web search sources
                         if len(state["documents"]) > len(sources):
                             for i in range(len(sources), len(state["documents"])):
                                 web_source = {
@@ -217,13 +263,13 @@ async def ask_question(question: Question):
                                 }
                                 sources.append(web_source)
                                 yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
-                    
+                
                 elif route == WEBSEARCH:
                     # Use web search directly
                     yield f"data: {json.dumps({'type': 'step', 'content': 'Using web search to find information...'})}\n\n"
                     state = web_search(state)
                     
-                    # Add web search source
+                    # Add web search sources
                     if state["documents"]:
                         for i, doc in enumerate(state["documents"]):
                             try:
@@ -242,13 +288,39 @@ async def ask_question(question: Question):
                 # Stream that we're generating the answer
                 yield f"data: {json.dumps({'type': 'step', 'content': 'Generating response based on gathered information...'})}\n\n"
                 
+                # Log state before generation
+                print(f"\n==== STATE BEFORE GENERATION ====")
+                print(f"State: {state}")
+                
+                
                 # Stream the generation with answer type
                 async for chunk in generate_streaming(state):
                     if chunk:
+                        answer_content += chunk
                         yield f"data: {json.dumps({'type': 'answer', 'content': chunk})}\n\n"
                 
+                # Store assistant response in conversation history
+                if answer_content:
+                    conversation_history.append({
+                        "role": "assistant", 
+                        "content": answer_content,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    # Persist to database
+                    try:
+                        store_result = store_conversation(user_id, thread_id, conversation_history)
+                        logging.info(f"Stored conversation for thread {thread_id}: {store_result}")
+                    except Exception as e:
+                        logging.error(f"Error storing conversation: {e}")
+                        logging.error(traceback.format_exc())
+                
                 # Complete source summary at end
-                yield f"data: {json.dumps({'type': 'sources_summary', 'content': sources})}\n\n"
+                if sources:
+                    yield f"data: {json.dumps({'type': 'sources_summary', 'content': sources})}\n\n"
+                
+                # Add thread_id and user_id metadata to response
+                yield f"data: {json.dumps({'type': 'metadata', 'content': {'thread_id': thread_id, 'user_id': user_id}})}\n\n"
                 
             except Exception as e:
                 logging.error(f"Error in ask streaming: {str(e)}")
@@ -258,6 +330,10 @@ async def ask_question(question: Question):
                 yield "data: [DONE]\n\n"
         
         # Return as streaming response
+        print(f"\n==== ASK QUESTION ====")
+        print(f"User ID: {user_id}")
+        print(f"Thread ID: {thread_id}")
+        print(f"Question: {question.question}")
         return StreamingResponse(
             stream_langgraph_response(),
             media_type="text/event-stream"

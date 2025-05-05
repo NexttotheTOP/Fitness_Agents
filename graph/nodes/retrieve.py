@@ -7,11 +7,17 @@ from ingestion import retriever, get_retriever
 def retrieve(state: GraphState) -> Dict[str, Any]:
     print("---RETRIEVE---")
     question = state["question"]
-
+    
+    # Create a copy of the full state
+    new_state = state.copy()
+    
     # Check if retriever is available
     if retriever is None:
         print("WARNING: Vector database not initialized or empty")
-        return {"documents": [], "question": question, "web_search": True}
+        new_state["documents"] = []
+        new_state["web_search"] = True
+        return new_state
 
     documents = retriever.invoke(question)
-    return {"documents": documents, "question": question}
+    new_state["documents"] = documents
+    return new_state
