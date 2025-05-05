@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import re
 from supabase import create_client, Client
+from psycopg_pool import ConnectionPool
 
 # Global connection pool variable for PostgreSQL
 _connection_pool = None
@@ -428,4 +429,20 @@ def test_supabase_connection_and_table():
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         print(f"==========================================\n\n")
-        return False 
+        return False
+
+def get_db_connection():
+    global _connection_pool
+    if _connection_pool is None:
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable not set")
+        
+        _connection_pool = ConnectionPool(database_url, min_size=1, max_size=10)
+    
+    return _connection_pool.getconn()
+
+def release_db_connection(conn):
+    global _connection_pool
+    if _connection_pool:
+        _connection_pool.putconn(conn) 
