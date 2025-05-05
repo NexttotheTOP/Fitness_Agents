@@ -7,79 +7,43 @@ import json
 from datetime import datetime
 import re
 from supabase import create_client, Client
-from psycopg_pool import ConnectionPool
 
-# Global connection pool variable for PostgreSQL
-_connection_pool = None
+# Global Supabase client
+_supabase_client = None
 
 # Initialize Supabase client
 def get_supabase_client():
     """Create and return a Supabase client."""
+    global _supabase_client
+    
+    if _supabase_client is not None:
+        return _supabase_client
+        
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
     
     if not supabase_url or not supabase_key:
-        raise ValueError("SUPABASE_URL and SUPABASE_KEY environment variables must be set")
+        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set")
     
-    return create_client(supabase_url, supabase_key)
+    _supabase_client = create_client(supabase_url, supabase_key)
+    return _supabase_client
 
-# We'll still need the PostgreSQL checkpointer for LangGraph
-from langgraph.checkpoint.postgres import PostgresSaver as PostgresCheckpointer
+# Use in-memory checkpointer for LangGraph instead of PostgreSQL
+from langgraph.checkpoint.memory import MemorySaver as MemoryCheckpointer
 
 def get_postgres_checkpointer():
-    """Create a PostgreSQL checkpointer using direct connection."""
-    postgres_uri = os.environ.get("POSTGRES_URI")
-    if not postgres_uri:
-        raise ValueError("POSTGRES_URI environment variable not set")
-    
-    from psycopg_pool import ConnectionPool
-    
-    # Use a global variable to store the pool
-    global _connection_pool
-    
-    # Create pool with proper shutdown_timeout to prevent threading errors
-    # Setting min_size to 1 and max_size to 5 to reduce resource usage
-    pool = ConnectionPool(
-        postgres_uri,
-        min_size=1, 
-        max_size=10,
-        # Set a short timeout for cleanup to avoid blocking on shutdown
-        timeout=10,
-        # Add these connection parameters
-        kwargs={
-            "autocommit": True,
-            "connect_timeout": 30,  # Allow more time for connection
-            "application_name": "fitness_app",  # Identify your app in database logs
-            "options": "-c search_path=public"  # Ensure correct schema
-        }
-    )
-    
-    # Register cleanup function to run when Python exits
-    import atexit
-    
-    def cleanup_pool():
-        if pool:
-            try:
-                pool.close()
-            except Exception as e:
-                print(f"Error closing connection pool: {str(e)}")
-    
-    # Register the cleanup function
-    atexit.register(cleanup_pool)
-    
-    # Create the checkpointer with the pool
-    checkpointer = PostgresCheckpointer(pool)
-    
-    # Set up the database tables
+    """Create an in-memory checkpointer for LangGraph instead of PostgreSQL."""
     try:
-        print("Setting up PostgreSQL checkpointer tables...")
-        checkpointer.setup()
-        print("PostgreSQL checkpointer tables created successfully")
+        print("Setting up in-memory checkpointer for LangGraph...")
+        # Create in-memory checkpointer
+        checkpointer = MemoryCheckpointer()
+        print("In-memory checkpointer created successfully")
+        return checkpointer
     except Exception as e:
-        print(f"Error setting up PostgreSQL checkpointer tables: {str(e)}")
+        print(f"Error setting up in-memory checkpointer: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise
-    
-    return checkpointer
 
 def setup_fitness_tables():
     """Create the profile_overview_generations table if it doesn't exist."""
@@ -436,18 +400,11 @@ def test_supabase_connection_and_table():
         print(f"==========================================\n\n")
         return False
 
+# Replace direct PostgreSQL connections with Supabase client
 def get_db_connection():
-    global _connection_pool
-    if _connection_pool is None:
-        database_url = os.getenv("POSTGRES_URI")
-        if not database_url:
-            raise ValueError("DATABASE_URL environment variable not set")
-        
-        _connection_pool = ConnectionPool(database_url, min_size=1, max_size=10)
-    
-    return _connection_pool.getconn()
+    # Simply return the Supabase client for database operations
+    return get_supabase_client()
 
 def release_db_connection(conn):
-    global _connection_pool
-    if _connection_pool:
-        _connection_pool.putconn(conn) 
+    # No need to release anything since the Supabase client manages its own connections
+    pass 

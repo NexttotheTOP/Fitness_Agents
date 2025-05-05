@@ -99,4 +99,5 @@ def get_conversation_history(thread_id: str) -> Optional[List[Dict[str, Any]]]:
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         print(f"====================================\n\n")
+        # Return empty list instead of None to avoid NoneType errors
         return []
