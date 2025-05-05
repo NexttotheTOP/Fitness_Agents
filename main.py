@@ -749,18 +749,11 @@ if __name__ == "__main__":
     
     # Define shutdown handler
     def handle_shutdown(signum, frame):
-        """Handle graceful shutdown by closing connections"""
+        """Handle graceful shutdown"""
         print("\nShutting down server...")
         
-        # Close any open connections or resources
-        try:
-            # Close PostgreSQL connection pool if it exists
-            from graph.memory_store import _connection_pool
-            if _connection_pool:
-                print("Closing PostgreSQL connection pool...")
-                _connection_pool.close()
-        except Exception as e:
-            print(f"Error during shutdown: {str(e)}")
+        # No need to close PostgreSQL connections anymore
+        # All connections are managed by Supabase client
         
         print("Shutdown complete.")
         sys.exit(0)
