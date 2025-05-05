@@ -45,8 +45,13 @@ def get_postgres_checkpointer():
         max_size=10,
         # Set a short timeout for cleanup to avoid blocking on shutdown
         timeout=10,
-        # This prevents the error by avoiding thread joins in the main thread
-        kwargs={"autocommit": True}
+        # Add these connection parameters
+        kwargs={
+            "autocommit": True,
+            "connect_timeout": 30,  # Allow more time for connection
+            "application_name": "fitness_app",  # Identify your app in database logs
+            "options": "-c search_path=public"  # Ensure correct schema
+        }
     )
     
     # Register cleanup function to run when Python exits
@@ -434,7 +439,7 @@ def test_supabase_connection_and_table():
 def get_db_connection():
     global _connection_pool
     if _connection_pool is None:
-        database_url = os.getenv("DATABASE_URL")
+        database_url = os.getenv("POSTGRES_URI")
         if not database_url:
             raise ValueError("DATABASE_URL environment variable not set")
         
