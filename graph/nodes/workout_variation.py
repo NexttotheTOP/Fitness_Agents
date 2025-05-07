@@ -2,9 +2,9 @@ from typing import Dict, Any
 import json
 
 from graph.chains.workout_variation import workout_variation_chain
-from graph.workout_state import WorkoutState, Workout
+from graph.workout_state import StateForWorkoutApp, Workout
 
-def generate_workout_variation(state: WorkoutState) -> Dict[str, Any]:
+def generate_workout_variation(state: StateForWorkoutApp) -> Dict[str, Any]:
     """Generate three variations of the input workout."""
     print("\n---GENERATING WORKOUT VARIATIONS---")
     

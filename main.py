@@ -15,7 +15,7 @@ import re
 load_dotenv()
 
 from graph.graph import app as qa_app
-from graph.workout_graph import app as workout_app
+from graph.workout_graph import app as workout_app, initialize_workout_state
 from graph.workout_state import Workout, UserProfile, WorkoutState, AgentState, QueryType
 from graph.fitness_coach_graph import get_initial_state, process_query, stream_response, app 
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +35,7 @@ api = FastAPI(title="Fitness Coach API")
 # Add CORS middleware
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=["*"],  # Add your Netlify domain and localhost for testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,6 +107,16 @@ class FitnessQueryRequest(BaseModel):
     user_id: str
     thread_id: str
     query: str
+
+class WorkoutNLQRequest(BaseModel):
+    user_id: str
+    prompt: str
+    thread_id: Optional[str] = None
+
+class WorkoutVariationRequest(BaseModel):
+    user_id: str
+    original_workout: Dict[str, Any]
+    thread_id: Optional[str] = None
 
 # Store active sessions
 active_sessions: Dict[str, Any] = {}
@@ -344,42 +354,59 @@ async def ask_question(question: Question):
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@api.post("/workout/variation")
-async def generate_workout_variation(request: Request):
-    # Get raw request data
-    raw_data = await request.json()
-    print("\n=== Raw Request Data ===")
-    print(json.dumps(raw_data, indent=2))
-    
-    # Extract the workout data from requestData
-    workout_data = raw_data.get("requestData")
-    if not workout_data:
-        return {"error": "No requestData found in request"}
-    
-    # Parse into Workout model
+@api.post("/workout/create")
+async def create_workout(request: WorkoutNLQRequest):
+    """Create a new workout based on natural language query"""
     try:
-        workout = Workout.model_validate(workout_data)
-        print("\n=== Parsed Workout ===")
-        print(f"Name: {workout.name}")
-        print(f"Description: {workout.description}")
-        print(f"Number of exercises: {len(workout.exercises)}")
+        # Initialize state with user profile
+        state = initialize_workout_state(
+            user_id=request.user_id,
+            workout_prompt=request.prompt,
+            thread_id=request.thread_id
+        )
         
-        # Generate variations
-        result = workout_app.invoke({
-            "original_workout": workout,
-            "variations": [],
-            "analysis": {},
-            "generation": None
-        })
+        # Run the graph
+        result = workout_app.invoke(state)
+        print("API returning result:", result)
         
-        print("\n=== Generated Variations ===")
-        print(f"Number of variations: {len(result.get('variations', []))}")
+        # Ensure reasoning is always present
+        if "reasoning" not in result:
+            result["reasoning"] = ""
         
-        return {"variations": result.get("variations", [])}
-        
+        # Return created workouts
+        return result
     except Exception as e:
-        print(f"\n=== Error ===\n{str(e)}")
-        return {"error": str(e)}
+        logging.error(f"Error creating workout: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+        
+@api.post("/workout/variations")
+async def generate_workout_variations(request: WorkoutVariationRequest):
+    """Generate variations of an existing workout"""
+    try:
+        # Initialize state
+        state = initialize_workout_state(
+            user_id=request.user_id,
+            workout_prompt="Generate variations of this workout",  # Default prompt
+            workflow_type="variation",
+            original_workout=request.original_workout,
+            thread_id=request.thread_id
+        )
+        
+        # Process through graph
+        result = workout_app.invoke(state)
+        
+        # Return variations
+        return {
+            "status": "success",
+            "variations": [w.model_dump() for w in result.get("variations", [])],
+            "user_id": request.user_id,
+            "thread_id": result.get("thread_id")
+        }
+    except Exception as e:
+        logging.error(f"Error generating workout variations: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def generate_response_stream(state: dict, query: str = None) -> AsyncIterable[str]:
     """Generate streaming response in SSE format"""
@@ -605,142 +632,7 @@ async def get_session_state(thread_id: str):
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api.get("/fitness/rag-status")
-async def get_rag_status():
-    """Check the status of the RAG system"""
-    try:
-        if not rag_system:
-            return {"status": "unavailable", "message": "RAG system not initialized"}
-        
-        # Try to access the vectorstore to confirm it's working
-        vectorstore = get_vectorstore()
-        if vectorstore is None:
-            return {"status": "unavailable", "message": "Vector database not found. Run the data collection scripts first."}
-            
-        count = vectorstore._collection.count()
-        
-        return {
-            "status": "available", 
-            "document_count": count,
-            "message": f"RAG system initialized with {count} document chunks"
-        }
-    except Exception as e:
-        logging.error(f"Error checking RAG status: {str(e)}")
-        return {"status": "error", "message": str(e)}
 
-@api.get("/fitness/test-db")
-async def test_db_connection():
-    """Test the database connection and table setup"""
-    try:
-        from graph.memory_store import test_supabase_connection_and_table
-        
-        # Run the comprehensive test
-        test_result = test_supabase_connection_and_table()
-        
-        if test_result:
-            return {
-                "status": "success",
-                "message": "Database connection and table setup validated successfully"
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Database connection or table setup has issues - check logs"
-            }
-    except Exception as e:
-        logging.error(f"Error testing database connection: {str(e)}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "message": "Failed to test database connection"
-        }
-
-@api.get("/fitness/profiles/{user_id}")
-async def get_user_profiles(user_id: str):
-    """Get all stored profiles for a specific user"""
-    try:
-        from graph.memory_store import get_previous_profile_overviews
-        
-        # Get all previous overviews for this user
-        profiles = get_previous_profile_overviews(user_id, limit=10)
-        
-        # Format the response
-        formatted_profiles = []
-        for profile in profiles:
-            # Limit the response text size for the overview
-            response_preview = profile.get("response", "")
-            if len(response_preview) > 500:
-                response_preview = response_preview[:497] + "..."
-                
-            formatted_profiles.append({
-                "id": profile.get("id"),
-                "thread_id": profile.get("thread_id"),
-                "timestamp": profile.get("timestamp"),
-                "metadata": profile.get("metadata"),
-                "response_preview": response_preview,
-                "response_length": len(profile.get("response", ""))
-            })
-        
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "profile_count": len(formatted_profiles),
-            "profiles": formatted_profiles
-        }
-    except Exception as e:
-        logging.error(f"Error retrieving profiles for user {user_id}: {str(e)}")
-        return {
-            "status": "error",
-            "user_id": user_id,
-            "error": str(e),
-            "message": "Failed to retrieve profiles"
-        }
-
-@api.post("/fitness/test-storage")
-async def test_profile_storage():
-    """Test directly storing a profile in Supabase"""
-    try:
-        from graph.memory_store import store_profile_overview
-        
-        # Generate test data
-        test_user_id = f"test_user_{uuid.uuid4()}"
-        test_thread_id = f"test_thread_{uuid.uuid4()}"
-        test_overview = f"This is a test overview from the direct storage test endpoint l. Generated at {datetime.now().isoformat()}"
-        test_metadata = {
-            "test": True,
-            "age": 30,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        logging.info(f"Testing direct storage with user_id: {test_user_id}")
-        
-        # Try to store the test data
-        result = store_profile_overview(
-            test_user_id,
-            test_thread_id,
-            test_overview,
-            test_metadata
-        )
-        
-        # Then try to retrieve it
-        from graph.memory_store import get_previous_profile_overviews
-        retrieved = get_previous_profile_overviews(test_user_id, limit=1)
-        
-        return {
-            "status": "success" if result and retrieved else "error",
-            "storage_result": result,
-            "retrieval_result": retrieved,
-            "message": "Test storage and retrieval completed",
-            "test_user_id": test_user_id,
-            "test_thread_id": test_thread_id
-        }
-    except Exception as e:
-        logging.error(f"Error testing profile storage: {str(e)}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "message": "Failed to test profile storage"
-        }
 
 if __name__ == "__main__":
     import uvicorn

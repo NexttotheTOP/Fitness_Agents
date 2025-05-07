@@ -14,7 +14,8 @@ class ExerciseDetails(BaseModel):
 class Exercise(BaseModel):
     name: str
     sets: int
-    reps: int
+    reps: Optional[int] = None  # For rep-based exercises
+    duration: Optional[str] = None  # For time-based exercises (e.g. "30 seconds", "1 minute")
     notes: Optional[str] = None
     details: ExerciseDetails
     
@@ -25,6 +26,10 @@ class Workout(BaseModel):
     name: str
     description: str
     exercises: List[Exercise]
+    difficulty_level: Optional[str] = None  # beginner, intermediate, advanced
+    estimated_duration: Optional[str] = None  # e.g. "45 minutes"
+    target_muscle_groups: Optional[List[str]] = None
+    equipment_required: Optional[List[str]] = None
     
     class Config:
         extra = "allow"
@@ -100,3 +105,32 @@ class WorkoutState(TypedDict):
     
     # Structured previous overview sections
     previous_sections: Optional[Dict[str, str]]  # Previous overview parsed into sections 
+
+
+class StateForWorkoutApp(TypedDict):
+    """State for the workout creation app with streamlined fields"""
+    # User identification
+    user_id: str  # Primary identifier for the user
+    thread_id: Optional[str]  # Used for LangGraph state management
+    
+    # Core workout fields
+    workout_prompt: str  # NLQ prompt (will contain different content based on operation)
+    workflow_type: str  # "create" or "variation" to explicitly state the intention
+    original_workout: Optional[Workout]  # Original workout (required for variations)
+    created_workouts: List[Workout]  # List of newly created workouts
+    variations: List[Workout]  # Workout variations if requested
+    
+    # Analysis fields
+    analysis: dict  # General analysis
+    generation_status: Optional[str]  # Status of generation process
+    
+    # User profile context fields  
+    user_profile: Dict[str, Any]  # User profile data
+    profile_assessment: Optional[str]  # Extracted from profile overview
+    body_analysis: Optional[str]  # Body analysis if available
+    health_limitations: Optional[List[str]]  # Health issues to consider
+    
+    # Reference data
+    previous_complete_response: Optional[str]  # Previous complete response
+    previous_sections: Optional[Dict[str, str]]  # Previous sections
+    reasoning: Optional[str]  # Reasoning for workout creation
