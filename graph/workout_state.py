@@ -134,3 +134,4 @@ class StateForWorkoutApp(TypedDict):
     previous_complete_response: Optional[str]  # Previous complete response
     previous_sections: Optional[Dict[str, str]]  # Previous sections
     reasoning: Optional[str]  # Reasoning for workout creation
+    plan_proposal_markdown: Optional[str]  # Plan proposal for workout creation

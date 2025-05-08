@@ -4,6 +4,7 @@ from graph.workout_state import StateForWorkoutApp
 from graph.nodes.workout_variation import generate_workout_variation
 from graph.nodes.workout_creation import create_workout_from_nlq
 from graph.nodes.workout_analysis import WorkoutAnalysisAgent
+from graph.nodes.workout_proposal import propose_workout_plan
 import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -18,6 +19,7 @@ def create_workout_graph():
     # Add the nodes
     workflow.add_node("analyze_profile", WorkoutAnalysisAgent().analyze_user_profile)
     workflow.add_node("route", route_by_workflow_type)
+    workflow.add_node("propose_plan", propose_workout_plan)
     workflow.add_node("create_workout", create_workout_from_nlq)
     workflow.add_node("generate_variations", generate_workout_variation)
 
@@ -25,15 +27,17 @@ def create_workout_graph():
     # First analyze profile, then route
     workflow.add_edge("analyze_profile", "route")
     
-    # Then route to appropriate node based on "next" key
+    # Route to appropriate node based on "next" key
     workflow.add_conditional_edges(
         "route",
         lambda x: x["next"],
         {
-            "create_workout": "create_workout",
+            "create_workout": "propose_plan",
             "generate_variations": "generate_variations"
         }
     )
+    # Proposal node only before create_workout
+    workflow.add_edge("propose_plan", "create_workout")
     
     # Finally end
     workflow.add_edge("create_workout", END)
