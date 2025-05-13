@@ -26,10 +26,6 @@ class ModelState(TypedDict):
     animation: Dict[str, Any]  # includes frame, isPlaying
     camera: Camera
     # Agent state
-    current_agent: Literal["conversation_agent", "tool_agent"]
-    # Communication between agents
-    agent_request: Optional[str]  # Request from conversation agent to tool agent
-    user_question: Optional[str]  # Original user question for context
-    tool_agent_report: Optional[str]  # Report from tool agent back to conversation agent
+    current_agent: Literal["muscle_expert", "animation_expert", "camera_expert"]
     # Debugging/tracking
     events: List[Dict[str, Any]]  # To track model control events 

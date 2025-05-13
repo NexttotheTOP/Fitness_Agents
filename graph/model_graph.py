@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, TypedDict, Annotated, Optional, Union, Callable, Literal
+from typing import Dict, List, Any, TypedDict, Annotated, Optional, Union
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
@@ -9,47 +9,22 @@ from datetime import datetime
 
 # Import our model state and agent
 from graph.model_state import ModelState, Position, Camera
-from graph.nodes.model_agents import conversation_agent, tool_agent
+from graph.nodes.model_agents import model_agent
 
 # Create a memory checkpointer
 memory_saver = MemorySaver()
 
-def should_route_to_tool_agent(state: ModelState) -> Literal["conversation_agent", "tool_agent"]:
-    """
-    Determines if the current request should be routed to the tool agent.
-    Returns the name of the next node to route to.
-    """
-    if state.get("agent_request"):
-        print("Routing to tool agent because agent_request is present")
-        return "tool_agent"
-    else:
-        print("Routing to conversation agent as default")
-        return "conversation_agent"
-
 def create_model_graph():
-    """Create and return a proper two-agent graph with routing between agents."""
+    """Create and return the muscle model interaction graph (now single agent)."""
     # Initialize the state graph with our ModelState schema
     builder = StateGraph(ModelState)
     
-    # Add both agent nodes
-    builder.add_node("conversation_agent", conversation_agent)
-    builder.add_node("tool_agent", tool_agent)
+    # Add only the single agent node
+    builder.add_node("model_agent", model_agent)
     
-    # Define the edges - conversation agent is the main entry point
-    builder.add_edge(START, "conversation_agent")
-    
-    # Conditional routing between agents based on state
-    builder.add_conditional_edges(
-        "conversation_agent",
-        should_route_to_tool_agent,
-        {
-            "conversation_agent": END,  # If no tool needed, we're done
-            "tool_agent": "tool_agent",  # Route to tool agent if needed
-        }
-    )
-    
-    # Tool agent always routes back to conversation agent to respond to the user
-    builder.add_edge("tool_agent", "conversation_agent")
+    # Define the edges
+    builder.add_edge(START, "model_agent")
+    builder.add_edge("model_agent", END)
     
     # Compile the graph with the memory checkpointer
     return builder.compile(checkpointer=memory_saver)
@@ -86,12 +61,7 @@ def create_default_state(thread_id: Optional[str] = None, user_id: Optional[str]
             "position": {"x": 0, "y": 1, "z": 7},
             "target": {"x": 0, "y": 0, "z": 0}
         },
-        
-        # These fields are optional in the TypedDict, no need to initialize
-        "current_agent": "conversation_agent",
-        "agent_request": None,
-        "user_question": None,
-        "tool_agent_report": None,
+        "current_agent": "model_agent",  # Default to model_agent
         "events": []  # Empty list to collect events
     }
 
@@ -103,7 +73,15 @@ class ModelGraphInterface:
         self.active_sessions = {}  # Store active sessions by thread_id
     
     def get_or_create_state(self, thread_id: Optional[str] = None, user_id: Optional[str] = None) -> ModelState:
-        """Get an existing session or create a new one if it doesn't exist."""
+        """Get an existing session or create a new one if it doesn't exist.
+        
+        Args:
+            thread_id: Optional thread ID for the conversation
+            user_id: Optional user ID for the conversation
+            
+        Returns:
+            The current or newly created state
+        """
         # Generate a new thread_id if not provided
         thread_id = thread_id or str(uuid.uuid4())
         
@@ -138,7 +116,17 @@ class ModelGraphInterface:
                          thread_id: Optional[str] = None, 
                          user_id: Optional[str] = None,
                          stream_handler=None) -> Dict[str, Any]:
-        """Process a user message through the graph."""
+        """Process a user message through the graph.
+        
+        Args:
+            message: The user message text
+            thread_id: Optional thread ID for the conversation
+            user_id: Optional user ID for the conversation
+            stream_handler: Optional callback function to handle streaming updates
+        
+        Returns:
+            Dict containing updated state and response
+        """
         # Get or create state for this session
         state = self.get_or_create_state(thread_id, user_id)
         
@@ -217,13 +205,7 @@ class ModelGraphInterface:
         
         # Save to memory checkpointer to persist
         try:
-            memory_saver.put(
-                final_state["thread_id"], 
-                {
-                    "state": cleared_events_state
-                },
-                {"metadata": {}, "new_versions": {}}
-            )
+            memory_saver.put(final_state["thread_id"], {"state": cleared_events_state})
             print(f"Persisted state to memory_saver with {len(cleared_events_state.get('messages', []))} messages")
         except Exception as e:
             print(f"Error persisting to memory_saver: {e}")
@@ -240,7 +222,14 @@ class ModelGraphInterface:
         }
     
     def get_state(self, thread_id: str) -> Optional[ModelState]:
-        """Get the current state for a specific thread ID."""
+        """Get the current state for a specific thread ID.
+        
+        Args:
+            thread_id: The thread ID to retrieve state for
+            
+        Returns:
+            The state if found, None otherwise
+        """
         # Check memory first
         if thread_id in self.active_sessions:
             print(f"Found state in active_sessions with {len(self.active_sessions[thread_id].get('messages', []))} messages")
@@ -260,7 +249,15 @@ class ModelGraphInterface:
             return None
     
     def reset(self, thread_id: Optional[str] = None, user_id: Optional[str] = None) -> ModelState:
-        """Reset the state to default values."""
+        """Reset the state to default values.
+        
+        Args:
+            thread_id: Optional thread ID to keep for continuity
+            user_id: Optional user ID to keep for continuity
+            
+        Returns:
+            The new default state
+        """
         new_state = create_default_state(thread_id, user_id)
         
         # Update memory
@@ -268,11 +265,7 @@ class ModelGraphInterface:
             self.active_sessions[thread_id] = new_state
             # Update persistent storage
             try:
-                memory_saver.put(
-                    thread_id, 
-                    {"state": new_state},
-                    {"metadata": {}, "new_versions": {}}
-                )
+                memory_saver.put(thread_id, {"state": new_state})
                 print(f"Reset and persisted new state to memory_saver")
             except Exception as e:
                 print(f"Error persisting reset state to memory_saver: {e}")
