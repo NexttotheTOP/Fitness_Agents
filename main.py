@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import os
@@ -11,6 +11,7 @@ from datetime import datetime
 import traceback
 import asyncio
 import re
+import socketio
 
 load_dotenv()
 
@@ -29,6 +30,9 @@ from langchain_openai import ChatOpenAI
 # Import get_vectorstore from ingestion
 from ingestion import get_vectorstore
 
+# Add 3D model API imports
+from graph.model_graph import model_graph
+
 # Create FastAPI app
 api = FastAPI(title="Fitness Coach API")
 
@@ -41,6 +45,54 @@ api.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Type", "Accept"],
 )
+
+# --- Socket.IO Integration ---
+# Create Socket.IO server
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+# Wrap FastAPI app with Socket.IO ASGI app
+app = socketio.ASGIApp(sio, api)
+
+# --- Socket.IO Event Handlers ---
+@sio.event
+def connect(sid, environ):
+    logging.info(f"Socket.IO client connected: {sid}")
+
+@sio.event
+def disconnect(sid):
+    logging.info(f"Socket.IO client disconnected: {sid}")
+
+@sio.on('model_message')
+async def handle_model_message(sid, data):
+    """
+    Handle incoming model messages from the frontend via Socket.IO.
+    Expects data to be a dict with keys: message, thread_id, user_id (all optional except message).
+    """
+    try:
+        message = data.get("message")
+        thread_id = data.get("thread_id")
+        user_id = data.get("user_id")
+        if not message:
+            await sio.emit('model_response', {"error": "Missing 'message' in data."}, to=sid)
+            return
+        # Call the model graph (non-streaming for now)
+        from graph.model_graph import model_graph
+        result = model_graph.process_message(
+            message=message,
+            thread_id=thread_id,
+            user_id=user_id
+        )
+        # Emit the response back to the client
+        await sio.emit('model_response', {
+            "response": result["response"],
+            "events": result["events"],
+            "thread_id": result["thread_id"],
+            "user_id": result["user_id"]
+        }, to=sid)
+        for event in result["events"]:
+            await sio.emit(event["type"], event["payload"], to=sid)
+    except Exception as e:
+        logging.error(f"Socket.IO model_message error: {e}")
+        await sio.emit('model_response', {"error": str(e)}, to=sid)
 
 # Initialize RAG system
 def init_rag_system():
@@ -120,6 +172,20 @@ class WorkoutVariationRequest(BaseModel):
 
 # Store active sessions
 active_sessions: Dict[str, Any] = {}
+
+# 3D Model Chat Request/Response Models
+class ModelChatRequest(BaseModel):
+    """Request model for 3D model chat interactions."""
+    message: str
+    thread_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+class ModelChatResponse(BaseModel):
+    """Response model for 3D model chat interactions."""
+    response: str
+    events: List[Dict[str, Any]]
+    thread_id: str
+    user_id: str
 
 @api.post("/ask")
 async def ask_question(question: Question):
@@ -632,7 +698,165 @@ async def get_session_state(thread_id: str):
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# 3D Model API Endpoints
+@api.post("/model/chat", response_model=ModelChatResponse)
+async def model_chat(request: ModelChatRequest):
+    """Handle a 3D model chat request without streaming."""
+    try:
+        result = model_graph.process_message(
+            message=request.message,
+            thread_id=request.thread_id,
+            user_id=request.user_id
+        )
+        return {
+            "response": result["response"],
+            "events": result["events"],
+            "thread_id": result["thread_id"],
+            "user_id": result["user_id"]
+        }
+    except Exception as e:
+        logging.error(f"Error in model chat endpoint: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
+@api.post("/model/chat/stream")
+async def model_chat_stream(request: ModelChatRequest):
+    """Handle a 3D model chat request with streaming response."""
+    
+    async def stream_response():
+        # Collect events to send at the end
+        events = []
+        thinking_chunks = []
+        response_chunks = []
+        thread_id = request.thread_id
+        user_id = request.user_id
+        
+        # Handler for streaming updates
+        def stream_handler(stream_mode, chunk):
+            nonlocal events, thread_id, user_id
+            if stream_mode == "custom":
+                # Handle custom streaming events (thinking, routing)
+                if "type" in chunk and chunk["type"] in ["thinking", "routing"]:
+                    thinking_chunks.append(chunk["content"])
+                    # Yield the thinking/routing update
+                    content = json.dumps({"type": "thinking", "content": chunk["content"]})
+                    return f"data: {content}\n\n"
+                
+            elif stream_mode == "updates":
+                # Handle state updates (events, agent responses)
+                for node_name, update in chunk.items():
+                    if "events" in update:
+                        for event in update["events"]:
+                            events.append(event)
+                    
+                    # If this update has a message in it, send it
+                    if node_name in ["muscle_expert", "animation_expert", "camera_expert"] and "messages" in update:
+                        messages = update["messages"]
+                        if messages and messages[-1]["role"] == "assistant":
+                            response_chunk = messages[-1]["content"]
+                            response_chunks.append(response_chunk)
+                            content = json.dumps({"type": "response", "content": response_chunk})
+                            return f"data: {content}\n\n"
+            
+            return None
+        
+        try:
+            # Process the message with streaming
+            result = model_graph.process_message(
+                message=request.message,
+                thread_id=request.thread_id,
+                user_id=request.user_id,
+                stream_handler=stream_handler
+            )
+            
+            # Get final thread_id and user_id
+            thread_id = result["thread_id"]
+            user_id = result["user_id"]
+            
+            # At the end, send all collected events
+            if events:
+                content = json.dumps({"type": "events", "content": events})
+                yield f"data: {content}\n\n"
+            
+            # Send thread_id and user_id as metadata
+            metadata = json.dumps({
+                "type": "metadata", 
+                "content": {
+                    "thread_id": thread_id,
+                    "user_id": user_id
+                }
+            })
+            yield f"data: {metadata}\n\n"
+            
+            # Indicate completion
+            yield f"data: [DONE]\n\n"
+        except Exception as e:
+            logging.error(f"Error in model chat streaming: {str(e)}")
+            logging.error(traceback.format_exc())
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+    )
+
+@api.websocket("/model/ws")
+async def model_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time 3D model chat interactions."""
+    await websocket.accept()
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            message_data = json.loads(data)
+            
+            if "message" not in message_data:
+                await websocket.send_json({"error": "Message field is required"})
+                continue
+            
+            # Process the message with thread_id and user_id if provided
+            result = model_graph.process_message(
+                message=message_data["message"],
+                thread_id=message_data.get("thread_id"),
+                user_id=message_data.get("user_id")
+            )
+            
+            # Send response and events back to client
+            await websocket.send_json({
+                "response": result["response"],
+                "events": result["events"],
+                "thread_id": result["thread_id"],
+                "user_id": result["user_id"]
+            })
+    
+    except WebSocketDisconnect:
+        # Client disconnected
+        pass
+    except Exception as e:
+        # Handle other errors
+        logging.error(f"Error in model websocket: {str(e)}")
+        if websocket.client_state.CONNECTED:
+            await websocket.send_json({"error": str(e)})
+
+@api.get("/model/reset")
+async def model_reset_state(thread_id: Optional[str] = None, user_id: Optional[str] = None):
+    """Reset the 3D model state to default values."""
+    new_state = model_graph.reset(thread_id, user_id)
+    return {
+        "status": "3D model state reset successfully", 
+        "thread_id": new_state["thread_id"],
+        "user_id": new_state["user_id"]
+    }
+
+@api.get("/model/state/{thread_id}")
+async def model_get_state(thread_id: str):
+    """Get the current state of the 3D model for a specific thread."""
+    state = model_graph.get_state(thread_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"State not found for thread ID: {thread_id}")
+    return state
 
 if __name__ == "__main__":
     import uvicorn
@@ -659,4 +883,4 @@ if __name__ == "__main__":
     print(f"Starting server on port {port}")
     
     # Run the server
-    uvicorn.run(api, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
