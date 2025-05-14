@@ -135,7 +135,12 @@ class SetCameraPositionInput(BaseModel):
     y: float = Field(..., description="Y coordinate of camera position.")
     z: float = Field(..., description="Z coordinate of camera position.")
 
-@tool("set_camera_position", args_schema=SetCameraPositionInput, return_direct=False)
+@tool(
+    "set_camera_position",
+    args_schema=SetCameraPositionInput,
+    return_direct=False,
+    description="""Set the camera position for the 3D model view."""
+)
 def set_camera_position_tool(x: float, y: float, z: float, state: Annotated[AgentState, InjectedState]) -> Dict[str, Any]:
     """Execute the camera position change and update the state."""
     print(f"set_camera_position_tool called with position: ({x}, {y}, {z})")
@@ -162,7 +167,12 @@ class SetCameraTargetInput(BaseModel):
     y: float = Field(..., description="Y coordinate of camera target.")
     z: float = Field(..., description="Z coordinate of camera target.")
 
-@tool("set_camera_target", args_schema=SetCameraTargetInput, return_direct=False)
+@tool(
+    "set_camera_target",
+    args_schema=SetCameraTargetInput,
+    return_direct=False,
+    description="""Set the camera target (look-at point) for the 3D model view."""
+)
 def set_camera_target_tool(x: float, y: float, z: float, state: Annotated[AgentState, InjectedState]) -> Dict[str, Any]:
     """Execute the camera target change and update the state."""
     print(f"set_camera_target_tool called with target: ({x}, {y}, {z})")
