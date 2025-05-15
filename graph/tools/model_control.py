@@ -139,7 +139,14 @@ class SetCameraPositionInput(BaseModel):
     "set_camera_position",
     args_schema=SetCameraPositionInput,
     return_direct=False,
-    description="""Set the camera position for the 3D model view."""
+    description="""Set the camera position for the 3D model view.
+    
+    Common view positions:
+    - Upper Body Front View (chest, biceps, abs): x: -0.03, y: 0.83, z: 3.48
+    - Upper Body Back View (back, shoulders): x: 0.20, y: 1.53, z: -3.70
+    - Lower Body Front View (quads, calves): x: -0.0007, y: -0.50, z: 4.45
+    - Lower Body Back View (glutes, hamstrings): x: 0.20, y: 0.26, z: -4.21
+    """
 )
 def set_camera_position_tool(x: float, y: float, z: float, state: Annotated[AgentState, InjectedState]) -> Dict[str, Any]:
     """Execute the camera position change and update the state."""
