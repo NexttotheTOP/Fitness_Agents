@@ -65,33 +65,163 @@ def disconnect(sid):
 async def handle_model_message(sid, data):
     """
     Handle incoming model messages from the frontend via Socket.IO.
-    Expects data to be a dict with keys: message, thread_id, user_id (all optional except message).
+    Streams assistant response token by token in real time.
     """
     try:
         message = data.get("message")
         thread_id = data.get("thread_id")
         user_id = data.get("user_id")
+        
+        print(f"\n==================== SOCKET.IO MODEL MESSAGE ====================")
+        print(f"SID: {sid}")
+        print(f"Message: {message}")
+        print(f"Thread ID: {thread_id}")
+        print(f"User ID: {user_id}")
+        print(f"================================================================\n")
+        
         if not message:
             await sio.emit('model_response', {"error": "Missing 'message' in data."}, to=sid)
             return
-        # Call the model graph (non-streaming for now)
-        from graph.model_graph import model_graph
-        result = model_graph.process_message(
+
+        # Set of event hashes to avoid duplicates
+        sent_event_hashes = set()
+        
+        # Define a streaming handler for tokens
+        async def stream_handler(stream_mode, chunk):
+            if chunk is None:
+                print("Stream handler received None chunk, skipping")
+                return
+                
+            # Handle different types of stream content
+            if stream_mode == "custom":
+                # Thinking or planning
+                if chunk.get("type") == "thinking":
+                    await sio.emit('model_thinking', {"content": chunk["content"]}, to=sid)
+                    print(f"EMITTED THINKING: {chunk['content']}")
+                    
+                # Response tokens - text emitted to user
+                elif chunk.get("type") == "response":
+                    await sio.emit('model_response', {
+                        "response": chunk["content"],  # This is a single token or chunk
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "stream": True
+                    }, to=sid)
+                    print(f"EMITTED RESPONSE TOKEN: {chunk['content']}")
+                    
+                # Events for 3D model updates
+                elif chunk.get("type") == "event":
+                    event = chunk.get("content")
+                    if not event:
+                        print("Received empty event content, skipping")
+                        return
+                    
+                    # Debug log
+                    print(f"SOCKET.IO - PROCESSING EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
+                    
+                    # Create a stable hash for deduplication
+                    event_hash = f"{event.get('type', 'unknown')}:{json.dumps(event.get('payload', {}))}"
+                    if event_hash not in sent_event_hashes:
+                        sent_event_hashes.add(event_hash)
+                        # Emit directly with event type as the event name
+                        await sio.emit(event["type"], event["payload"], to=sid)
+                        print(f"SOCKET.IO - EMITTED EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
+                        
+                        # Add extra debugging for muscle selection events
+                        if event["type"] == "model:selectMuscles":
+                            muscle_names = event["payload"].get("muscleNames", [])
+                            muscle_colors = event["payload"].get("colors", {})
+                            print(f"SOCKET.IO - MUSCLE SELECTION EVENT: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
+                            print(f"SOCKET.IO - MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
+                            print(f"SOCKET.IO - MUSCLE COLORS SAMPLE: {dict(list(muscle_colors.items())[:3])}")
+                    else:
+                        print(f"SOCKET.IO - SKIPPED DUPLICATE EVENT: {event['type']}")
+                        
+            elif stream_mode == "updates":
+                # Stream model events as they happen
+                for node_name, node_data in chunk.items():
+                    # Check for events in the node data
+                    events = node_data.get("events", [])
+                    if not events:
+                        continue
+                    
+                    print(f"SOCKET.IO - PROCESSING {len(events)} EVENTS FROM {node_name}")
+                        
+                    for event in events:
+                        # Validate event structure
+                        if not isinstance(event, dict) or "type" not in event or "payload" not in event:
+                            print(f"SOCKET.IO - Skipping invalid event: {event}")
+                            continue
+                        
+                        # Debug log
+                        print(f"SOCKET.IO - PROCESSING UPDATE EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
+                            
+                        # Create a unique hash to avoid duplicates
+                        event_hash = f"{event['type']}:{json.dumps(event['payload'])}"
+                        if event_hash not in sent_event_hashes:
+                            sent_event_hashes.add(event_hash)
+                            # Emit the event directly to frontend with the event type as the event name
+                            await sio.emit(event["type"], event["payload"], to=sid)
+                            print(f"SOCKET.IO - EMITTED UPDATE EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
+                            
+                            # Add extra debugging for muscle selection events
+                            if event["type"] == "model:selectMuscles":
+                                muscle_names = event["payload"].get("muscleNames", [])
+                                muscle_colors = event["payload"].get("colors", {})
+                                print(f"SOCKET.IO - UPDATE MUSCLE SELECTION: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
+                                print(f"SOCKET.IO - UPDATE MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
+                                print(f"SOCKET.IO - UPDATE MUSCLE COLORS: {dict(list(muscle_colors.items())[:3])}")
+                        else:
+                            print(f"SOCKET.IO - SKIPPED DUPLICATE UPDATE EVENT: {event['type']}")
+
+        # Call the model graph with streaming
+        result = await model_graph.process_message(
             message=message,
             thread_id=thread_id,
-            user_id=user_id
+            user_id=user_id,
+            stream_handler=stream_handler
         )
-        # Emit the response back to the client
+
+        # Check if any events weren't sent during streaming
+        for event in result.get("events", []):
+            if not isinstance(event, dict) or "type" not in event or "payload" not in event:
+                print(f"SOCKET.IO - Skipping invalid final event: {event}")
+                continue
+                
+            event_hash = f"{event['type']}:{json.dumps(event['payload'])}"
+            if event_hash not in sent_event_hashes:
+                # Debug the event being emitted
+                print(f"SOCKET.IO - EMITTING FINAL EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
+                
+                # Directly emit the event with its type as the event name
+                await sio.emit(event["type"], event["payload"], to=sid)
+                print(f"SOCKET.IO - EMITTED FINAL EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
+                
+                # Special debug for muscle selection
+                if event["type"] == "model:selectMuscles":
+                    muscle_names = event["payload"].get("muscleNames", [])
+                    muscle_colors = event["payload"].get("colors", {})
+                    print(f"SOCKET.IO - FINAL MUSCLE SELECTION: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
+                    print(f"SOCKET.IO - FINAL MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
+                    print(f"SOCKET.IO - FINAL MUSCLE COLORS: {dict(list(muscle_colors.items())[:3])}")
+                
+                sent_event_hashes.add(event_hash)  # Add to set after sending
+            else:
+                print(f"SOCKET.IO - SKIPPED DUPLICATE FINAL EVENT: {event['type']}")
+                
+        # Final response message to complete the conversation
         await sio.emit('model_response', {
             "response": result["response"],
-            "events": result["events"],
             "thread_id": result["thread_id"],
-            "user_id": result["user_id"]
+            "user_id": result["user_id"],
+            "done": True
         }, to=sid)
-        for event in result["events"]:
-            await sio.emit(event["type"], event["payload"], to=sid)
+        
+        print(f"Socket.IO message complete. Final events count: {len(result.get('events', []))}, Sent events: {len(sent_event_hashes)}")
+        
     except Exception as e:
         logging.error(f"Socket.IO model_message error: {e}")
+        traceback.print_exc()  # Print the full stack trace for debugging
         await sio.emit('model_response', {"error": str(e)}, to=sid)
 
 # Initialize RAG system
@@ -477,6 +607,12 @@ async def generate_workout_variations(request: WorkoutVariationRequest):
 async def generate_response_stream(state: dict, query: str = None) -> AsyncIterable[str]:
     """Generate streaming response in SSE format"""
     try:
+        async def stream_handler(stream_mode, chunk):
+            if chunk and chunk.get("type") == "response":
+                # Yield each token/chunk as it arrives
+                content = json.dumps({"type": "response", "content": chunk["content"]})
+                return f"data: {content}\n\n"
+        
         async for chunk in stream_response(state, query):
             # Ensure the chunk is properly formatted for SSE
             if chunk:
@@ -703,7 +839,7 @@ async def get_session_state(thread_id: str):
 async def model_chat(request: ModelChatRequest):
     """Handle a 3D model chat request without streaming."""
     try:
-        result = model_graph.process_message(
+        result = await model_graph.process_message(
             message=request.message,
             thread_id=request.thread_id,
             user_id=request.user_id
@@ -724,45 +860,40 @@ async def model_chat_stream(request: ModelChatRequest):
     """Handle a 3D model chat request with streaming response."""
     
     async def stream_response():
-        # Collect events to send at the end
-        events = []
-        thinking_chunks = []
-        response_chunks = []
+        # Track sent events to avoid duplicates
+        sent_event_hashes = set()
         thread_id = request.thread_id
         user_id = request.user_id
         
         # Handler for streaming updates
         def stream_handler(stream_mode, chunk):
-            nonlocal events, thread_id, user_id
+            nonlocal sent_event_hashes, thread_id, user_id
+            if chunk is None:
+                return None
+            # Stream LLM tokens as 'response' events
+            if chunk.get("type") == "response":
+                content = json.dumps({"type": "response", "content": chunk["content"]})
+                return f"data: {content}\n\n"
             if stream_mode == "custom":
                 # Handle custom streaming events (thinking, routing)
                 if "type" in chunk and chunk["type"] in ["thinking", "routing"]:
-                    thinking_chunks.append(chunk["content"])
-                    # Yield the thinking/routing update
                     content = json.dumps({"type": "thinking", "content": chunk["content"]})
                     return f"data: {content}\n\n"
-                
             elif stream_mode == "updates":
                 # Handle state updates (events, agent responses)
                 for node_name, update in chunk.items():
                     if "events" in update:
                         for event in update["events"]:
-                            events.append(event)
-                    
-                    # If this update has a message in it, send it
-                    if node_name in ["muscle_expert", "animation_expert", "camera_expert"] and "messages" in update:
-                        messages = update["messages"]
-                        if messages and messages[-1]["role"] == "assistant":
-                            response_chunk = messages[-1]["content"]
-                            response_chunks.append(response_chunk)
-                            content = json.dumps({"type": "response", "content": response_chunk})
-                            return f"data: {content}\n\n"
-            
+                            event_hash = hash(f"{event['type']}:{json.dumps(event['payload'])}")
+                            if event_hash not in sent_event_hashes:
+                                sent_event_hashes.add(event_hash)
+                                content = json.dumps({"type": "event", "content": event})
+                                return f"data: {content}\n\n"
             return None
         
         try:
             # Process the message with streaming
-            result = model_graph.process_message(
+            result = await model_graph.process_message(
                 message=request.message,
                 thread_id=request.thread_id,
                 user_id=request.user_id,
@@ -772,11 +903,6 @@ async def model_chat_stream(request: ModelChatRequest):
             # Get final thread_id and user_id
             thread_id = result["thread_id"]
             user_id = result["user_id"]
-            
-            # At the end, send all collected events
-            if events:
-                content = json.dumps({"type": "events", "content": events})
-                yield f"data: {content}\n\n"
             
             # Send thread_id and user_id as metadata
             metadata = json.dumps({
@@ -816,20 +942,62 @@ async def model_websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": "Message field is required"})
                 continue
             
-            # Process the message with thread_id and user_id if provided
-            result = model_graph.process_message(
+            # Track sent events to avoid duplicates
+            sent_event_hashes = set()
+            
+            # Handler for streaming updates
+            async def ws_stream_handler(stream_mode, chunk):
+                if stream_mode == "custom":
+                    # Handle custom streaming events (thinking, routing)
+                    if "type" in chunk and chunk["type"] in ["thinking", "routing"]:
+                        await websocket.send_json({
+                            "type": "thinking",
+                            "content": chunk["content"]
+                        })
+                
+                elif stream_mode == "updates":
+                    # Handle state updates (events, agent responses)
+                    for node_name, update in chunk.items():
+                        if "events" in update:
+                            for event in update["events"]:
+                                # Create a hash of the event to check for duplicates
+                                event_hash = hash(f"{event['type']}:{json.dumps(event['payload'])}")
+                                if event_hash not in sent_event_hashes:
+                                    sent_event_hashes.add(event_hash)
+                                    # Emit event immediately
+                                    await websocket.send_json({
+                                        "type": "event",
+                                        "content": event
+                                    })
+                        
+                        # If this update has a message in it, send it
+                        if node_name in ["muscle_expert", "animation_expert", "camera_expert"] and "messages" in update:
+                            messages = update["messages"]
+                            if messages and messages[-1]["role"] == "assistant":
+                                await websocket.send_json({
+                                    "type": "response",
+                                    "content": messages[-1]["content"]
+                                })
+            
+            # Process the message with streaming
+            result = await model_graph.process_message(
                 message=message_data["message"],
                 thread_id=message_data.get("thread_id"),
-                user_id=message_data.get("user_id")
+                user_id=message_data.get("user_id"),
+                stream_handler=ws_stream_handler
             )
             
-            # Send response and events back to client
+            # Send final metadata
             await websocket.send_json({
-                "response": result["response"],
-                "events": result["events"],
-                "thread_id": result["thread_id"],
-                "user_id": result["user_id"]
+                "type": "metadata",
+                "content": {
+                    "thread_id": result["thread_id"],
+                    "user_id": result["user_id"]
+                }
             })
+            
+            # Send completion message
+            await websocket.send_json({"type": "done"})
     
     except WebSocketDisconnect:
         # Client disconnected

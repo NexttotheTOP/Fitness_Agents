@@ -9,24 +9,85 @@ from datetime import datetime
 
 # Import our model state and agent
 from graph.model_state import ModelState, Position, Camera
-from graph.nodes.model_agents import model_agent
+# Import new modular nodes
+from graph.nodes.model_graph_nodes import (
+    planner_node,
+    tool_executor_node,
+    responder_node,
+    router_agent,
+    muscle_control_agent,
+    camera_control_agent,
+)
 
 # Create a memory checkpointer
 memory_saver = MemorySaver()
 
 def create_model_graph():
-    """Create and return the muscle model interaction graph (now single agent)."""
-    # Initialize the state graph with our ModelState schema
+    """Create and return the refactored multi-node LangGraph for the 3-D model."""
     builder = StateGraph(ModelState)
+
+    # Register nodes
+    builder.add_node("planner", planner_node)
+    builder.add_node("muscle_control", muscle_control_agent)
+    builder.add_node("camera_control", camera_control_agent)
+    builder.add_node("execute_tools", tool_executor_node)
+    builder.add_node("responder", responder_node)
+    # Router agent: doesn't modify state, just makes decisions
+    builder.add_node("router", router_agent)
+
+    # Entry point
+    builder.add_edge(START, "planner")
     
-    # Add only the single agent node
-    builder.add_node("model_agent", model_agent)
+    # Remove the loop-causing edge from camera_control to execute_tools
+    # Since camera_control now directly executes its tools
+    builder.add_edge("camera_control", "responder")
+
+    # After planning, check which specialized agents are needed
+    builder.add_conditional_edges(
+        "planner",
+        lambda state: "muscle_control" if state.get("_route_muscle") else "camera_control" if state.get("_route_camera") else "responder",
+        {
+            "muscle_control": "muscle_control",
+            "camera_control": "camera_control",
+            "responder": "responder"
+        }
+    )
     
-    # Define the edges
-    builder.add_edge(START, "model_agent")
-    builder.add_edge("model_agent", END)
-    
-    # Compile the graph with the memory checkpointer
+    # After specialized agents, go to tool executor if they generated tool calls
+    builder.add_conditional_edges(
+        "muscle_control",
+        lambda state: "execute_tools" if (state.get("pending_muscle_tool_calls") or state.get("pending_tool_calls")) else ("camera_control" if state.get("_route_camera") else "responder"),
+        {
+            "camera_control": "camera_control",
+            "execute_tools": "execute_tools",
+            "responder": "responder"
+        }
+    )
+
+    # After execute_tools, go to camera_control if it's needed based on _route_camera flag
+    builder.add_conditional_edges(
+        "execute_tools",
+        lambda state: "camera_control" if state.get("_route_camera") else "responder",
+        {
+            "camera_control": "camera_control",
+            "responder": "responder"
+        }
+    )
+
+    # Router decides next node based on the _route field it adds to state
+    builder.add_conditional_edges(
+        "router",
+        lambda state: state.get("_route", "responder"),
+        {
+            "execute_tools": "execute_tools",
+            "responder": "responder"
+        }
+    )
+
+    # Final edge
+    builder.add_edge("responder", END)
+
+    # Compile with checkpointing
     return builder.compile(checkpointer=memory_saver)
 
 def create_default_state(thread_id: Optional[str] = None, user_id: Optional[str] = None) -> ModelState:
@@ -61,8 +122,11 @@ def create_default_state(thread_id: Optional[str] = None, user_id: Optional[str]
             "position": {"x": 0, "y": 1, "z": 7},
             "target": {"x": 0, "y": 0, "z": 0}
         },
-        "current_agent": "model_agent",  # Default to model_agent
-        "events": []  # Empty list to collect events
+        "current_agent": "muscle_expert",  # Placeholder, kept for backward compatibility
+        "events": [],  # Empty list to collect events
+        # New planner/executor fields
+        "pending_tool_calls": None,
+        "assistant_draft": None
     }
 
 class ModelGraphInterface:
@@ -111,11 +175,11 @@ class ModelGraphInterface:
         self.active_sessions[thread_id] = new_state
         return new_state
     
-    def process_message(self, 
+    async def process_message(self, 
                          message: str, 
                          thread_id: Optional[str] = None, 
                          user_id: Optional[str] = None,
-                         stream_handler=None) -> Dict[str, Any]:
+                         stream_handler=  None) -> Dict[str, Any]:
         """Process a user message through the graph.
         
         Args:
@@ -148,6 +212,7 @@ class ModelGraphInterface:
         input_state["messages"] = messages
         
         print(f"Initial state before processing: messages={len(input_state.get('messages', []))}, events={input_state.get('events', [])}")
+        print(f"Stream handler available: {stream_handler is not None}")
         
         # Configure stream mode
         stream_modes = ["custom", "updates"]
@@ -162,24 +227,36 @@ class ModelGraphInterface:
         # Process the message through the graph
         if stream_handler:
             # Use streaming and call the handler for each chunk
-            for stream_mode, chunk in self.graph.stream(
+            print(f"Processing with stream_handler available")
+            
+            # Create a context with the writer function
+            context = {"writer": stream_handler}
+            
+            # Stream with context
+            async for stream_mode, chunk in self.graph.astream(
                 input_state,
                 config=config,
-                stream_mode=stream_modes
+                stream_mode=stream_modes,
+                # context=context  # Pass writer to nodes
             ):
+                print(f"Stream mode: {stream_mode}, chunk: {chunk}")
                 if chunk is None:
                     continue
-                if stream_handler(stream_mode, chunk):
-                    # Pass through any non-None values returned by the handler
-                    pass
-            
+                # Await the async stream_handler!
+                await stream_handler(stream_mode, chunk)
             # Get the final state
-            final_state = self.graph.get_state()
+            final_state = await self.graph.aget_state(config=config)
         else:
             # Process without streaming
-            final_state = self.graph.invoke(input_state, config=config)
-        
-        print(f"Final state after processing: messages={len(final_state.get('messages', []))}")
+            print(f"Processing without stream_handler")
+            final_state = await self.graph.ainvoke(input_state, config=config)
+        # --- UNPACK TUPLE IF NEEDED ---
+        if isinstance(final_state, tuple):
+            for item in final_state:
+                if isinstance(item, dict) and "thread_id" in item:
+                    final_state = item
+                    break
+        #print(f"Final state after processing: messages={len(final_state.get('messages', []))}")
         
         # Update our maintained state and active_sessions
         self.active_sessions[final_state["thread_id"]] = final_state
@@ -274,8 +351,3 @@ class ModelGraphInterface:
 
 # Create a singleton instance for easy import
 model_graph = ModelGraphInterface() 
-
-def stream_handler(stream_mode, chunk):
-    if chunk is None:
-        return None
-    # ... rest of your code ... 

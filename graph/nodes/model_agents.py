@@ -20,6 +20,25 @@ from graph.tools import (
     reset_camera_tool
 )
 import json
+import asyncio
+
+__all__ = [
+    "SYSTEM_PROMPT",
+    "RESPONSE_PROMPT",
+    "MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION",
+    "TOOL_MAP",
+    "select_muscles_tool",
+    "toggle_muscle_tool",
+    "set_animation_frame_tool",
+    "toggle_animation_tool",
+    "set_camera_position_tool",
+    "set_camera_target_tool", 
+    "reset_camera_tool",
+    "model_agent",
+    "MUSCLE_MAPPING_STR",
+    "MUSCLE_PAIRING_RULES",
+    "MUSCLE_NAMING_RULES",
+]
 
 # Add muscle mapping/grouping variables for prompt context
 MUSCLE_MAPPING_STR = '''
@@ -34,8 +53,8 @@ TRUNK:
   - Chest (Right): Pectoralis_Major_01_Clavicular_R, Pectoralis_Major_02_Sternocostal_R, Pectoralis_Major_03_Abdominal_R, Pectoralis_Minor_R
   - Abdomen (Left): External_Oblique, Rectus_Abdominis
   - Abdomen (Right): External_Oblique_R, Rectus_Abdominis_R
-  - Back (Left): Iliocostalis_Lumborum, Latissimus_Dorsi, Longissimus_Thoracis, Rhomboideus_Major, Rhomboideus_Minor, Serratus_Posterior_Inferior, Serratus_Posterior_Superior, Spinalis_Thoracis, Splenius_Capitis, Splenius_Cervicis
-  - Back (Right): Iliocostalis_Lumborum_R, Latissimus_Dorsi_R, Longissimus_Thoracis_R, Rhomboideus_Major_R, Rhomboideus_Minor_R, Serratus_Posterior_Inferior_R, Serratus_Posterior_Superior_R, Spinalis_Thoracis_R, Splenius_Capitis_R, Splenius_Cervicis_R
+  - Back (Left): Iliocostalis_Lumborum, Latissimus_Dorsi, Longissimus_Thoracis, Rhomboideus_Major, Rhomboideus_Minor, Serratus_Posterior_Inferior, Serratus_Posterior_Superior, Spinalis_Thoracis, Splenius_Capitis, Splenius_Cervicis, Trapezius_01_Upper, Trapezius_02_Middle, Trapezius_03_Lower
+  - Back (Right): Iliocostalis_Lumborum_R, Latissimus_Dorsi_R, Longissimus_Thoracis_R, Rhomboideus_Major_R, Rhomboideus_Minor_R, Serratus_Posterior_Inferior_R, Serratus_Posterior_Superior_R, Spinalis_Thoracis_R, Splenius_Capitis_R, Splenius_Cervicis_R, Trapezius_01_Upper_R, Trapezius_02_Middle_R, Trapezius_03_Lower_R
   - Neck (Left): Levator_Scapulae, Omohyoid, Scalenus_Medius, Semispinalis_Capitis_Lateral, Semispinalis_Capitis_Medial, Sternocleidomastoid, Sternohyoid
   - Neck (Right): Levator_Scapulae_R, Omohyoid_R, Scalenus_Medius_R, Semispinalis_Capitis_Lateral_R, Semispinalis_Capitis_Medial_R, Sternocleidomastoid_R, Sternohyoid_R
   - Shoulders (Left): Trapezius_01_Upper, Trapezius_02_Middle, Trapezius_03_Lower, Serratus_Anterior
@@ -154,8 +173,8 @@ When highlighting muscles related to specific movements or exercises, use these 
 {MUSCLE_NAMING_RULES}
 
 [Current Model State]
-- Highlighted muscles (with colors): {{highlighted_muscles}}
-- Camera: {{camera}}
+- Highlighted muscles (with colors): {{highlighted_muscles_str}}
+- Camera: {{camera_str}}
 
 [Tool Usage Instructions]
 - **select_muscles(muscle_names: list, colors: dict)**: Highlight specific muscles. Always use the exact muscle names from [Available Muscles]. The `colors` argument should be a dictionary mapping each muscle name to a hex color (e.g., `{{"Biceps_Brachii": "#FFD600"}}`). If the user does not specify colors, assign a distinct, visually clear color to each muscle.
@@ -205,40 +224,29 @@ After using any tools, provide a concise summary of what you changed in the mode
 # Response generation prompt - used after tools are executed
 RESPONSE_PROMPT = """
 [Persona]
-You are a friendly fitness coach who uses a 3D anatomy model to help clients understand their bodies and exercises better. Your AI colleague has already demonstrated the relevant muscles on the model.
+You are a friendly, brutally honest fitness coach who uses a 3D anatomy model to help clients understand their muscles, bodies, and exercises better. 
+You are knowledgeable but conversational, using gym-friendly language that balances technical accuracy with practical advice.
 
 [Task]
-- Explain what muscles were highlighted and why they're important for the user's question
-- For each muscle, include both its scientific name and common name (e.g., "Pectoralis Major 03 Abdominal (lower chest)")
-- Use simple, gym-friendly language that anyone can understand
-- Keep explanations brief but informative
+- Respond directly to the user's question based on the now-visible highlighted muscles
+- Reference the conversation history to maintain context and avoid repeating information
+- For each muscle, include both its scientific name and common name when first mentioning it
+- Keep explanations concise but informative
 
 [Context]
 - User question: {user_question}
 - Your initial assessment: {initial_assessment}
 - Changes made to the model: {model_changes}
-
-[Fitness Context]
-- Always connect muscles to specific exercises and training benefits.
-- Include at least one practical exercise tip in every response.
-- Mention how the highlighted muscles contribute to athletic performance or daily activities.
-- Add relevant training advice like "These work best with high reps" or "These respond well to heavy compound movements."
-- Where relevant, mention common issues like "This is often a weak link in many lifters" or "This typically gets tight from desk jobs."
-- For bilateral muscles (left/right pairs), just describe them once unless there's something unique to mention
+- Conversation history provides important context for your response
 
 [Response Style]
-- Be conversational and varied - no templates or repetitive structures.
-- Mix it up! Sometimes lead with a fun fact, a workout suggestion, or even a question.
-- Use gym lingo and training terminology that a real fitness coach would use.
-- Adapt to the user's knowledge level - more technical with experienced lifters, more basic with beginners.
-- Avoid listing every muscle in the exact same format - integrate information naturally.
-- Avoid the repetitive "Scientific Name/Common Name/Role" format for every single muscle.
-- When highlighting bilateral muscles (left/right pairs), don't repeat the same description twice.
+- Be conversational and dynamic - vary your structure and approach based on the query
+- Use appropriate fitness terminology while remaining accessible to all knowledge levels
+- Mix scientific knowledge with practical coaching advice
+- When highlighting bilateral muscles (left/right pairs), describe their function once rather than repeating
+- Avoid the repetitive format of listing every individual muscle - integrate information naturally
+- Reference previous conversation points where relevant to build continuity
 
-[Examples of Good Responses]
-✅ "Check out those triceps! I've highlighted them in red. Your triceps actually make up about 2/3 of your upper arm mass - most people think biceps are bigger, but it's these bad boys that give your arms real size. Try diamond push-ups to really make them pop!"
-
-✅ "There go your glutes! The maximus (the big one in red) is actually the largest muscle in your body. Want to build it? Nothing beats heavy hip thrusts and deep squats. The smaller glute med and min (in blue) are crucial for hip stability and preventing knee pain."
 """
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, streaming=True)
@@ -294,7 +302,10 @@ def summarize_changes(old_state, new_state):
             messages.append(f"I've paused the animation at frame {new_anim.get('frame', 0)}.")
     return " ".join(messages) if messages else "I've made the requested changes to the 3D model."
 
-def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Command[Literal[END]]:
+async def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Command[Literal[END]]:
+    print("MODEL_AGENT: writer is", writer)
+    if writer: 
+        writer({"tester": "Streaming custom data while generating, this is fro testing purposes"})
     # Format state for prompt
     highlighted_muscles = state.get("highlighted_muscles", {})
     highlighted_muscles_str = (
@@ -306,7 +317,10 @@ def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Com
     camera = state.get("camera", {"position": {"x": 0, "y": 1, "z": 7}, "target": {"x": 0, "y": 0, "z": 0}})
     camera_str = f"Position: {camera.get('position', {})}, Target: {camera.get('target', {})}"
     
-    system_message = SystemMessage(content=SYSTEM_PROMPT)
+    system_message = SystemMessage(content=SYSTEM_PROMPT) #.format(
+    #     highlighted_muscles=highlighted_muscles_str, 
+    #     camera=camera_str
+    # ))
     messages = state.get("messages", [])
     
     print(f"\n{'='*50}\nModel agent received state with {len(messages)} messages")
@@ -346,10 +360,10 @@ def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Com
     print(f"Current state before tool call: highlighted_muscles={highlighted_muscles}, events={state.get('events', [])}")
     
     # Step 1: Get initial LLM assessment for tools and capture initial thoughts
-    response = llm.bind_tools(
+    response = await llm.bind_tools(
         MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION,
         tool_choice="auto"
-    ).invoke(
+    ).ainvoke(
         full_prompt
     )
     
@@ -497,39 +511,36 @@ def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Com
         
         # Step 3: Summarize the changes made to the model
         model_changes = summarize_changes(state, current_state)
-        
-        # Step 4: Instead of a separate response prompt, re-invoke the LLM
-        # Build a prompt that includes:
-        # - The original user message
-        # - The updated state (highlighted muscles, camera, etc.)
-        # - A summary of tool actions/events (optional, but helpful)
-        # - Instructions to generate a friendly, concise message
-
         summary_of_changes = summarize_changes(state, current_state)
-        # Or, pass the actual tool results/events if you want more detail
-
         # Build the new prompt
         system_message = SystemMessage(content=RESPONSE_PROMPT + f"\nHighlighted muscles: {highlighted_muscles_str}\nAnimation: {animation_str}\nCamera: {camera_str}\nChanges: {summary_of_changes}")
         user_message = HumanMessage(content=messages[-1]["content"])
         tool_info_message = HumanMessage(content=f"Tool actions taken: {model_changes}")
-
-        # Compose the prompt for the LLM
         final_prompt = [system_message] + conversation_history + [user_message, tool_info_message]
-
-        # Call the LLM to generate the final message
-        final_response = llm.invoke(final_prompt)
-        final_message = final_response.content
+        if writer:
+            async for chunk in llm.astream(final_prompt):
+                print("STREAMING TOKEN:", chunk)
+                token = chunk.content if hasattr(chunk, 'content') else chunk
+                await writer({"type": "response", "content": token})
+            final_message = ""
+        else:
+            final_response = await llm.ainvoke(final_prompt)
+            final_message = final_response.content
     else:
         # If no tool calls, use the regular response content
-        final_message = initial_assessment or "I'll help you with that right away."
-
+        if writer:
+            async for chunk in llm.astream(full_prompt):
+                print("STREAMING TOKEN:", chunk)
+                token = chunk.content if hasattr(chunk, 'content') else chunk
+                await writer({"type": "response", "content": token})
+            final_message = ""
+        else:
+            final_message = initial_assessment or "I'll help you with that right away."
     # Add the response to messages
     new_messages = messages.copy()
     new_messages.append({"role": "assistant", "content": final_message})
     current_state["messages"] = new_messages
-
     print(f"Final state updates: {current_state}")
     print(f"Final message count in state: {len(current_state.get('messages', []))}")
-
     current_state["current_agent"] = "model_agent"
     return Command(goto=END, update=current_state) 
