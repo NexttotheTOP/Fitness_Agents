@@ -17,7 +17,7 @@ import shutil
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("vector_db_debug.log"),
@@ -25,6 +25,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("ingestion")
+
+# Disable excessive logging from HTTP libraries
+for noisy_logger in ["httpx", "httpcore", "hpack", "httpcore.http2"]:
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 load_dotenv()
 
@@ -93,7 +97,7 @@ def check_vectorstore():
         
         for directory, collection_name in locations:
             if os.path.exists(directory):
-                logger.info(f"Found vector database at {directory}")
+                # logger.info(f"Found vector database at {directory}")
                 try:
                     import chromadb
                     client_settings = chromadb.config.Settings(
@@ -114,12 +118,13 @@ def check_vectorstore():
                     if count > 0:
                         return True, vs
                 except Exception as e:
-                    logger.error(f"Error accessing {collection_name}: {e}")
+                    # logger.error(f"Error accessing {collection_name}: {e}")
+                    pass
         
-        logger.warning("No populated vector database found")
+        # logger.warning("No populated vector database found")
         return False, None
     except Exception as e:
-        logger.error(f"Error checking vector database: {e}", exc_info=True)
+        # logger.error(f"Error checking vector database: {e}", exc_info=True)
         return False, None
     
 def collect_and_prepare_documents():
@@ -175,12 +180,12 @@ def collect_and_prepare_documents():
 
 def create_vectorstore():
     """Admin function to create the vectorstore - only called directly by admin tools"""
-    logger.info("Starting vectorstore creation process")
+    # logger.info("Starting vectorstore creation process")
     doc_splits = collect_and_prepare_documents()
     
     # Save to vector database
     persist_directory = "./.chroma"
-    logger.info(f"Creating directory at {persist_directory}")
+    # logger.info(f"Creating directory at {persist_directory}")
     os.makedirs(persist_directory, exist_ok=True)
     
     try:
@@ -192,54 +197,54 @@ def create_vectorstore():
             persist_directory=persist_directory,
         )
         
-        logger.info(f"Vector database created and saved to {persist_directory}")
+        # logger.info(f"Vector database created and saved to {persist_directory}")
         return vectorstore
     except Exception as e:
-        logger.error(f"Failed to create vectorstore: {e}", exc_info=True)
+        # logger.error(f"Failed to create vectorstore: {e}", exc_info=True)
         return None
 
 def get_vectorstore():
     """Get the existing vectorstore - used by the main application"""
     persist_directory = "./.fitness_chroma"
-    logger.info(f"Attempting to access vectorstore at {persist_directory}")
+    # logger.info(f"Attempting to access vectorstore at {persist_directory}")
     try:
         vs = Chroma(
             collection_name="fitness-coach-chroma-new",
             embedding_function=OpenAIEmbeddings(),
             persist_directory=persist_directory
         )
-        logger.info(f"Successfully accessed vectorstore with {vs._collection.count()} documents")
+        # logger.info(f"Successfully accessed vectorstore with {vs._collection.count()} documents")
         return vs
     except Exception as e:
-        logger.error(f"Error accessing vectorstore: {e}", exc_info=True)
+        # logger.error(f"Error accessing vectorstore: {e}", exc_info=True)
         return None
 
 def get_retriever():
     """Get a retriever from the existing vectorstore"""
-    logger.info("Creating retriever from vectorstore")
+    # logger.info("Creating retriever from vectorstore")
     
     # Try to use existing check function
     exists, vs = check_vectorstore()
     
     if exists and vs is not None:
-        logger.info("Retriever created successfully from existing vectorstore")
+        # logger.info("Retriever created successfully from existing vectorstore")
         print("Retriever created ================================")
         return vs.as_retriever(
             search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.5, "k": 10}
+            search_kwargs={"score_threshold": 0.7, "k": 15}
         )
     
     # Fallback to old method
     vs = get_vectorstore()
     if vs is not None:
-        logger.info("Retriever created successfully using legacy method")
+        # logger.info("Retriever created successfully using legacy method")
         print("Retriever created ================================")
         return vs.as_retriever(
             search_type="similarity_score_threshold", 
             search_kwargs={"score_threshold": 0.5, "k": 10}
         )
     
-    logger.warning("Failed to create retriever - vectorstore not available")
+    # logger.warning("Failed to create retriever - vectorstore not available")
     return None
 
 # Export the retriever for use in the application
@@ -303,13 +308,14 @@ def delete_existing_vectorstore():
     """Delete the existing vector database to start fresh"""
     persist_directory = "./.fitness_chroma"
     try:
-        logger.info(f"Attempting to delete existing vector database at {persist_directory}")
+        # logger.info(f"Attempting to delete existing vector database at {persist_directory}")
         if os.path.exists(persist_directory):
             # Check write permissions before attempting to delete
             if os.access(persist_directory, os.W_OK):
-                logger.info(f"Directory has write permissions, proceeding with delete")
+                # logger.info(f"Directory has write permissions, proceeding with delete")
+                pass
             else:
-                logger.error(f"No write permission for {persist_directory}")
+                # logger.error(f"No write permission for {persist_directory}")
                 return False
                 
             # Check for lock files
@@ -319,22 +325,23 @@ def delete_existing_vectorstore():
                     if file.endswith('.lock'):
                         lock_path = os.path.join(root, file)
                         lock_files.append(lock_path)
-                        logger.warning(f"Found lock file: {lock_path}")
+                        # logger.warning(f"Found lock file: {lock_path}")
             
             # Delete directory
-            logger.info(f"Deleting directory {persist_directory}")
+            # logger.info(f"Deleting directory {persist_directory}")
             shutil.rmtree(persist_directory)
-            logger.info("Vector database deleted successfully")
+            # logger.info("Vector database deleted successfully")
             
             # Verify deletion
             if not os.path.exists(persist_directory):
-                logger.info("Verified directory deletion was successful")
+                # logger.info("Verified directory deletion was successful")
+                pass
             else:
-                logger.error("Directory still exists after deletion attempt")
+                # logger.error("Directory still exists after deletion attempt")
                 return False
                 
             # Create empty directory to ensure fresh start
-            logger.info(f"Creating fresh directory at {persist_directory}")
+            # logger.info(f"Creating fresh directory at {persist_directory}")
             os.makedirs(persist_directory, exist_ok=True)
             
             # Test write access to new directory
@@ -342,16 +349,16 @@ def delete_existing_vectorstore():
             try:
                 with open(test_file, 'w') as f:
                     f.write("test")
-                logger.info(f"Successfully wrote test file to {test_file}")
+                # logger.info(f"Successfully wrote test file to {test_file}")
                 os.remove(test_file)
-                logger.info("Test file removed")
+                # logger.info("Test file removed")
             except Exception as e:
-                logger.error(f"Failed write test to new directory: {e}", exc_info=True)
+                # logger.error(f"Failed write test to new directory: {e}", exc_info=True)
                 return False
                 
         return True
     except Exception as e:
-        logger.error(f"Error deleting vector database: {e}", exc_info=True)
+        # logger.error(f"Error deleting vector database: {e}", exc_info=True)
         return False
 
 def create_fitness_vector_database(batch_size=250):
@@ -362,33 +369,33 @@ def create_fitness_vector_database(batch_size=250):
     Args:
         batch_size: Number of documents to process in each batch to avoid token limits
     """
-    logger.info("Starting fitness vector database creation")
+    # logger.info("Starting fitness vector database creation")
     
     # Clear existing vector database
     if not delete_existing_vectorstore():
-        logger.error("Failed to prepare directory for new vector database")
+        # logger.error("Failed to prepare directory for new vector database")
         return None
     
     # Load all fitness YouTuber documents
-    logger.info("Loading fitness YouTuber documents")
+    # logger.info("Loading fitness YouTuber documents")
     documents = load_fitness_youtubers_data()
     
     if not documents:
-        logger.error("No documents found to process!")
+        # logger.error("No documents found to process!")
         return None
     
     # Chunk documents
-    logger.info(f"Chunking {len(documents)} documents")
+    # logger.info(f"Chunking {len(documents)} documents")
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         chunk_size=500, chunk_overlap=50
     )
     doc_splits = text_splitter.split_documents(documents)
     
-    logger.info(f"Created {len(doc_splits)} chunks from {len(documents)} documents")
+    #logger.info(f"Created {len(doc_splits)} chunks from {len(documents)} documents")
     
     # Save to vector database
     persist_directory = "./.fitness_chroma"
-    logger.info(f"Preparing directory {persist_directory}")
+    # logger.info(f"Preparing directory {persist_directory}")
     
     # Ensure directory exists and is writable
     os.makedirs(persist_directory, exist_ok=True)
@@ -399,11 +406,11 @@ def create_fitness_vector_database(batch_size=250):
         anonymized_telemetry=False,
         allow_reset=True
     )
-    logger.info("Created ChromaDB client settings")
+    # logger.info("Created ChromaDB client settings")
     
     # Process first batch separately to create the collection
     try:
-        logger.info("Creating new collection with first batch")
+        # logger.info("Creating new collection with first batch")
         batch_end = min(batch_size, len(doc_splits))
         first_batch = doc_splits[0:batch_end]
         
@@ -417,7 +424,7 @@ def create_fitness_vector_database(batch_size=250):
         vectorstore.persist()
         logger.info(f"Successfully created collection with {batch_end} documents")
     except Exception as e:
-        logger.error(f"Error creating collection: {e}", exc_info=True)
+        # logger.error(f"Error creating collection: {e}", exc_info=True)
         return None
     
     # Process remaining batches
@@ -427,35 +434,38 @@ def create_fitness_vector_database(batch_size=250):
             for i in range(batch_size, len(doc_splits), batch_size):
                 end_idx = min(i + batch_size, len(doc_splits))
                 current_batch = doc_splits[i:end_idx]
-                logger.info(f"Processing batch {i//batch_size + 1}/{(len(doc_splits) + batch_size - 1)//batch_size}: chunks {i} to {end_idx-1}")
+                # logger.info(f"Processing batch {i//batch_size + 1}/{(len(doc_splits) + batch_size - 1)//batch_size}: chunks {i} to {end_idx-1}")
                 
                 # Add documents to the existing collection
                 vectorstore.add_documents(current_batch)
                 vectorstore.persist()
-                logger.info(f"Successfully added batch {i//batch_size + 1}")
+                # logger.info(f"Successfully added batch {i//batch_size + 1}")
                 
         except Exception as e:
-            logger.error(f"Error adding documents: {e}", exc_info=True)
+            # logger.error(f"Error adding documents: {e}", exc_info=True)
             # Continue with what we have
+            pass
     
     # Verify the final count
     try:
         doc_count = vectorstore._collection.count()
         logger.info(f"Vector database creation complete with {doc_count} documents")
     except Exception as e:
-        logger.error(f"Could not get final document count: {e}", exc_info=True)
+        # logger.error(f"Could not get final document count: {e}", exc_info=True)
+        pass
     
     # Update the global retriever
-    logger.info("Updating global retriever")
+    # logger.info("Updating global retriever")
     try:
         global retriever
         retriever = vectorstore.as_retriever(
             search_type="similarity_score_threshold", 
             search_kwargs={"score_threshold": 0.5, "k": 10}
         )
-        logger.info("Global retriever updated with new vector database")
+        # logger.info("Global retriever updated with new vector database")
     except Exception as e:
-        logger.error(f"Failed to update global retriever: {e}", exc_info=True)
+        # logger.error(f"Failed to update global retriever: {e}", exc_info=True)
+        pass
     
     return vectorstore
 
@@ -471,13 +481,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.create:
-        logger.info("Creating fitness vector database")
+        # logger.info("Creating fitness vector database")
         create_fitness_vector_database()
     elif args.check:
-        logger.info("Checking vector database status")
+        # logger.info("Checking vector database status")
         check_vectorstore()
     else:
-        logger.info("Running with default action: create fitness vector database")
+        # logger.info("Running with default action: create fitness vector database")
         create_fitness_vector_database() 
 
 
