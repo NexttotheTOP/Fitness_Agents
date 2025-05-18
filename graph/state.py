@@ -22,3 +22,4 @@ class GraphState(TypedDict):
     conversation_history: Optional[List[Dict[str, Any]]]
     thread_id: Optional[str]
     user_id: Optional[str]
+    web_search_raw_results: Optional[List[Dict[str, Any]]] 

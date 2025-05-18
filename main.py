@@ -422,6 +422,9 @@ async def ask_question(question: Question):
                     post_grade_docs = len(state.get("documents", []))
                     logging.info(f"Document grading: {pre_grade_docs} before, {post_grade_docs} after")
                     
+                    # Log the full state after grading for debugging
+                    logging.info(f"Full state after grading: {json.dumps(state, default=str)}")
+                    
                     # Process source information
                     if state["documents"]:
                         logging.info(f"Processing {len(state['documents'])} graded documents for source information")
@@ -463,12 +466,31 @@ async def ask_question(question: Question):
                         # Add web search sources
                         if len(state["documents"]) > len(sources):
                             for i in range(len(sources), len(state["documents"])):
-                                web_source = {
-                                    "content": state["documents"][i].page_content[:200] + "..." if len(state["documents"][i].page_content) > 200 else state["documents"][i].page_content,
-                                    "metadata": {"source": "web_search"}
-                                }
-                                sources.append(web_source)
-                                yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
+                                # Check if the document is from web search
+                                if state["documents"][i].metadata.get("source_type") == "web_search":
+                                    web_source = {
+                                        "content": state["documents"][i].page_content[:250] + "..." if len(state["documents"][i].page_content) > 250 else state["documents"][i].page_content,
+                                        "title": state["documents"][i].metadata.get("title", "Web Search Result"),
+                                        "author": "Web",
+                                        "source_type": "Web Search",
+                                        "url": state["documents"][i].metadata.get("source", ""),
+                                        "domain": state["documents"][i].metadata.get("domain", ""),
+                                        "search_rank": i+1,
+                                        "result_score": state["documents"][i].metadata.get("result_score", 1.0)
+                                    }
+                                    sources.append({
+                                        "content": web_source["content"], 
+                                        "metadata": {
+                                            "title": web_source["title"],
+                                            "author": web_source["author"],
+                                            "source": web_source["url"],
+                                            "source_type": web_source["source_type"],
+                                            "domain": web_source["domain"],
+                                            "search_rank": web_source["search_rank"],
+                                            "result_score": web_source["result_score"]
+                                        }
+                                    })
+                                    yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
                 
                 elif route == WEBSEARCH:
                     # Use web search directly
@@ -479,15 +501,31 @@ async def ask_question(question: Question):
                     if state["documents"]:
                         for i, doc in enumerate(state["documents"]):
                             try:
-                                web_source = {
-                                    "content": doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content,
-                                    "title": "Web Search Result",
-                                    "author": "Web",
-                                    "source_type": "Web Search",
-                                    "url": ""
-                                }
-                                sources.append({"content": web_source["content"], "metadata": {"source": "web_search"}})
-                                yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
+                                # Check if the document is from web search
+                                if doc.metadata.get("source_type") == "web_search":
+                                    web_source = {
+                                        "content": doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content,
+                                        "title": doc.metadata.get("title", "Web Search Result"),
+                                        "author": "Web",
+                                        "source_type": "Web Search",
+                                        "url": doc.metadata.get("source", ""),
+                                        "domain": doc.metadata.get("domain", ""),
+                                        "search_rank": i+1,
+                                        "result_score": doc.metadata.get("result_score", 1.0)
+                                    }
+                                    sources.append({
+                                        "content": web_source["content"], 
+                                        "metadata": {
+                                            "title": web_source["title"],
+                                            "author": web_source["author"],
+                                            "source": web_source["url"],
+                                            "source_type": web_source["source_type"],
+                                            "domain": web_source["domain"],
+                                            "search_rank": web_source["search_rank"],
+                                            "result_score": web_source["result_score"]
+                                        }
+                                    })
+                                    yield f"data: {json.dumps({'type': 'source', 'content': web_source})}\n\n"
                             except Exception as e:
                                 logging.error(f"Error processing web search result: {e}")
                 
@@ -523,7 +561,21 @@ async def ask_question(question: Question):
                 
                 # Complete source summary at end
                 if sources:
-                    yield f"data: {json.dumps({'type': 'sources_summary', 'content': sources})}\n\n"
+                    sources_with_metadata = []
+                    for source in sources:
+                        if isinstance(source, dict) and "metadata" in source:
+                            metadata = source["metadata"]
+                            source_entry = {
+                                "content": source["content"],
+                                "title": metadata.get("title", "Unknown"),
+                                "url": metadata.get("source", ""),
+                                "source_type": metadata.get("source_type", "Unknown"),
+                                "domain": metadata.get("domain", ""),
+                                "rank": metadata.get("search_rank", 0) if metadata.get("source_type") == "web_search" else None
+                            }
+                            sources_with_metadata.append(source_entry)
+                    
+                    yield f"data: {json.dumps({'type': 'sources_summary', 'content': sources_with_metadata})}\n\n"
                 
                 # Add thread_id and user_id metadata to response
                 yield f"data: {json.dumps({'type': 'metadata', 'content': {'thread_id': thread_id, 'user_id': user_id}})}\n\n"

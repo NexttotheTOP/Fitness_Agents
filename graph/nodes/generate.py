@@ -1,7 +1,7 @@
 from typing import Any, Dict, AsyncGenerator, AsyncIterable
 from langchain_core.messages import HumanMessage, AIMessage
 
-from graph.chains.generation import generation_chain, streaming_generation_chain, streaming_conversation_chain
+from graph.chains.generation import generation_chain, streaming_generation_chain, streaming_conversation_chain, conversation_chain
 from graph.state import GraphState
 import asyncio
 
@@ -11,14 +11,40 @@ def generate(state: GraphState) -> Dict[str, Any]:
     print("---GENERATE---")
     question = state["question"]
     documents = state["documents"]
+    conversation_history = state.get("conversation_history", [])
+    
+    # Convert conversation history to LangChain message format
+    chat_history = []
+    if conversation_history:
+        # Include ALL messages including the current question
+        for msg in conversation_history:
+            if msg["role"] == "user":
+                chat_history.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                chat_history.append(AIMessage(content=msg["content"]))
 
-    generation = generation_chain.invoke({"context": documents, "question": question})
+    generation = conversation_chain.invoke({
+        "context": format_docs(documents), 
+        "question": question,
+        "chat_history": chat_history  # Always include this parameter
+    })
     return {"documents": documents, "question": question, "generation": generation}
 
 
 def format_docs(docs):
-    """Format documents into a single string."""
-    return "\n\n".join(doc.page_content for doc in docs)
+    """Format documents into a single string with source info."""
+    formatted_docs = []
+    for i, doc in enumerate(docs):
+        source_info = ""
+        if hasattr(doc, "metadata"):
+            if doc.metadata.get("source_type") == "web_search":
+                source_info = f" [Source: {doc.metadata.get('title')} ({doc.metadata.get('domain')})]"
+            else:
+                source_info = f" [Source: {doc.metadata.get('title', 'Unknown')}]"
+        
+        formatted_docs.append(f"Document {i+1}{source_info}:\n{doc.page_content}")
+    
+    return "\n\n".join(formatted_docs)
 
 
 async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
@@ -35,9 +61,9 @@ async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
     
     # Convert conversation history to LangChain message format
     chat_history = []
-    if conversation_history:  # Remove the length check - we want to use any history we have
-        # Include previous messages but skip the current question
-        for i, msg in enumerate(conversation_history[:-1]):
+    if conversation_history:  # Use any history we have - include all messages
+        # Include ALL previous messages INCLUDING the current question
+        for i, msg in enumerate(conversation_history):
             if msg["role"] == "user":
                 chat_history.append(HumanMessage(content=msg["content"]))
                 print(f"Added user message {i}: {msg['content'][:30]}...")
@@ -62,9 +88,10 @@ async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
     
     # If we get here, we're using the standard chain without history
     print("No usable conversation history, using standard chain")
-    async for chunk in streaming_generation_chain.astream({
+    async for chunk in streaming_conversation_chain.astream({
         "context": format_docs(documents), 
-        "question": question
+        "question": question,
+        "chat_history": []  # Empty chat history
     }):
         if hasattr(chunk, 'content') and chunk.content:
             yield chunk.content

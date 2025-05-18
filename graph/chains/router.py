@@ -31,6 +31,7 @@ Use the vectorstore for ANY questions related to:
 - Fitness nutrition and diet advice
 - Weight loss and body composition
 - General fitness concepts and principles
+- Any other questions related to fitness, workout routines, nutrition, and exercise techniques
 
 Only use web-search if the question is completely unrelated to fitness or requires very recent/current information that wouldn't be in the vectorstore."""
 route_prompt = ChatPromptTemplate.from_messages(

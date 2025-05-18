@@ -19,5 +19,7 @@ def retrieve(state: GraphState) -> Dict[str, Any]:
         return new_state
 
     documents = retriever.invoke(question)
+    print(f"DEBUG: Retrieved {len(documents)} documents")
+    print(f"DEBUG: Documents: {documents}")
     new_state["documents"] = documents
     return new_state
