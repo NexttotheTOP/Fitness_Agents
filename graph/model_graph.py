@@ -40,7 +40,15 @@ def create_model_graph():
     
     # Remove the loop-causing edge from camera_control to execute_tools
     # Since camera_control now directly executes its tools
-    builder.add_edge("camera_control", "responder")
+    # Add this edge back
+    builder.add_conditional_edges(
+        "camera_control",
+        lambda state: "execute_tools" if state.get("pending_camera_tool_calls") else "responder",
+        {
+            "execute_tools": "execute_tools",
+            "responder": "responder"
+        }
+    )
 
     # After planning, check which specialized agents are needed
     builder.add_conditional_edges(
@@ -67,7 +75,7 @@ def create_model_graph():
     # After execute_tools, go to camera_control if it's needed based on _route_camera flag
     builder.add_conditional_edges(
         "execute_tools",
-        lambda state: "camera_control" if state.get("_route_camera") else "responder",
+        lambda state: state.get("_route", "responder"),
         {
             "camera_control": "camera_control",
             "responder": "responder"
@@ -126,7 +134,17 @@ def create_default_state(thread_id: Optional[str] = None, user_id: Optional[str]
         "events": [],  # Empty list to collect events
         # New planner/executor fields
         "pending_tool_calls": None,
-        "assistant_draft": None
+        "assistant_draft": None,
+        # New fields with defaults
+        "_route_camera": False,
+        "_route_muscle": False,
+        "_route": None,
+        "_planner_iterations": 0,
+        "_tool_executions": 0,
+        "_just_executed_muscle_tools": False,
+        "pending_muscle_tool_calls": None,
+        "pending_camera_tool_calls": None,
+        "_control_history": {}
     }
 
 class ModelGraphInterface:

@@ -35,6 +35,7 @@ from graph.nodes.model_agents import (
     toggle_muscle_tool,
     set_camera_position_tool,
     set_camera_target_tool,
+    set_camera_view_tool,
     reset_camera_tool,
 )
 
@@ -45,8 +46,7 @@ MUSCLE_CONTROL_TOOLS = [
 ]
 
 CAMERA_CONTROL_TOOLS = [
-    set_camera_position_tool,
-    set_camera_target_tool,
+    set_camera_view_tool,  # New combined camera tool
     reset_camera_tool
 ]
 
@@ -136,8 +136,7 @@ Lower Body Back View (for glutes, hamstrings):
 - Target: x: 0.06, y: -0.56, z: -0.11
 
 [Tools]
-- `set_camera_position(x, y, z)`: Set the camera position
-- `set_camera_target(x, y, z)`: Set what the camera is looking at
+- `set_camera_view(position_x, position_y, position_z, target_x, target_y, target_z)`: Set both camera position and look-at target in one call
 - `reset_camera()`: Reset to default view
 
 Study the highlighted muscles and position the camera to provide the best view of those muscles.
@@ -872,23 +871,35 @@ async def tool_executor_node(
                 print(f"[tool_executor_node] Executed toggle_muscle with {muscle_name}")
                 
             # CAMERA TOOLS
-            elif tool_name == "set_camera_position":
-                x = float(tool_args.get("x", 0))
-                y = float(tool_args.get("y", 0))
-                z = float(tool_args.get("z", 0))
+            elif tool_name == "set_camera_view":
+                # Extract position coordinates
+                position_x = float(tool_args.get("position_x", 0))
+                position_y = float(tool_args.get("position_y", 0))
+                position_z = float(tool_args.get("position_z", 0))
                 
-                # Ensure values are within reasonable ranges
-                x = max(-7, min(7, x))
-                y = max(-1, min(2, y))
-                z = max(-7, min(7, z))
+                # Extract target coordinates
+                target_x = float(tool_args.get("target_x", 0))
+                target_y = float(tool_args.get("target_y", 0))
+                target_z = float(tool_args.get("target_z", 0))
                 
-                # Create position object
-                position = {"x": x, "y": y, "z": z}
+                # Ensure position values are within reasonable ranges
+                position_x = max(-7, min(7, position_x))
+                position_y = max(-1, min(2, position_y))
+                position_z = max(-7, min(7, position_z))
                 
-                # Create event
+                # Ensure target values are within reasonable ranges
+                target_x = max(-0.2, min(0.2, target_x))
+                target_y = max(-0.6, min(1, target_y))
+                target_z = max(-0.2, min(0.2, target_z))
+                
+                # Create position and target objects
+                position = {"x": position_x, "y": position_y, "z": position_z}
+                target = {"x": target_x, "y": target_y, "z": target_z}
+                
+                # Create a single combined event
                 event = {
-                    "type": "model:setCameraPosition",
-                    "payload": {"position": position}
+                    "type": "model:setCameraView",
+                    "payload": {"position": position, "target": target}
                 }
                 
                 # Add to events
@@ -897,41 +908,6 @@ async def tool_executor_node(
                 # Update camera state
                 camera = new_state.get("camera", {"position": {}, "target": {}}).copy()
                 camera["position"] = position
-                
-                # Update state directly
-                new_state["camera"] = camera
-                
-                # Set result for event collection
-                tool_result = {
-                    "events": [event],
-                }
-                
-                print(f"[tool_executor_node] Executed set_camera_position with {x}, {y}, {z}")
-                
-            elif tool_name == "set_camera_target":
-                x = float(tool_args.get("x", 0))
-                y = float(tool_args.get("y", 0))
-                z = float(tool_args.get("z", 0))
-                
-                # Ensure values are within reasonable ranges
-                x = max(-0.2, min(0.2, x))
-                y = max(-0.6, min(1, y))
-                z = max(-0.2, min(0.2, z))
-                
-                # Create target object
-                target = {"x": x, "y": y, "z": z}
-                
-                # Create event
-                event = {
-                    "type": "model:setCameraTarget",
-                    "payload": {"target": target}
-                }
-                
-                # Add to events
-                events_collected.append(event)
-                
-                # Update camera state
-                camera = new_state.get("camera", {"position": {}, "target": {}}).copy()
                 camera["target"] = target
                 
                 # Update state directly
@@ -942,7 +918,7 @@ async def tool_executor_node(
                     "events": [event],
                 }
                 
-                print(f"[tool_executor_node] Executed set_camera_target with {x}, {y}, {z}")
+                print(f"[tool_executor_node] Executed set_camera_view with position:({position_x}, {position_y}, {position_z}), target:({target_x}, {target_y}, {target_z})")
                 
             elif tool_name == "reset_camera":
                 # Create event
@@ -1020,24 +996,33 @@ async def tool_executor_node(
     just_executed_muscle_tools = new_state.get("_just_executed_muscle_tools", False)
     print(f"[tool_executor_node] Did we execute muscle tools? {just_executed_muscle_tools}")
 
+    # Get pending_camera_tool_calls before clearing it
+    pending_camera_tool_calls = new_state.get("pending_camera_tool_calls", [])
+
     # Clear pending calls so the planner can stop looping if none are added again
     new_state["pending_tool_calls"] = None
     new_state["pending_muscle_tool_calls"] = None
     new_state["pending_camera_tool_calls"] = None
 
     # Make routing decision based on what we just executed
-    if new_state.get("_route_camera") and just_executed_muscle_tools:
+    if pending_camera_tool_calls and len(pending_camera_tool_calls) > 0:
+        # We just executed camera tools directly from camera_control
+        print(f"[tool_executor_node] Just processed camera tools, routing to responder")
+        # Clear routing flag to break the loop
+        new_state["_route_camera"] = False
+        new_state["_route"] = "responder"
+    elif new_state.get("_route_camera") and just_executed_muscle_tools:
         # We just processed muscle tools and camera is next in sequence
         print(f"[tool_executor_node] Muscle tools executed, routing directly to camera_control")
         # Clear our execution flag so we don't re-route on next execution
         new_state["_just_executed_muscle_tools"] = False
         # Route to camera_control
         new_state["_route"] = "camera_control"
-        print(f"[tool_executor_node] DEBUG: _route_camera={new_state.get('_route_camera')}, _route={new_state.get('_route')}")
     else:
-        # Default to router for decision making
-        print(f"[tool_executor_node] Deferring to router for next step decision")
-        # No explicit route setting - let router decide
+        # Default to responder for all other cases to avoid loops
+        print(f"[tool_executor_node] No routing condition matched, going to responder")
+        new_state["_route_camera"] = False
+        new_state["_route"] = "responder"
 
     # Optionally provide a quick state-update chunk
     if writer:
@@ -1116,10 +1101,8 @@ async def responder_node(
             if muscles: 
                 muscle_str = ", ".join([m.split("_R")[0] for m in muscles])
                 model_changes_lines.append(f"Highlighted {muscle_str}")
-        elif ev_type == "model:setCameraPosition":
+        elif ev_type == "model:setCameraView":
             model_changes_lines.append("Adjusted camera position for better view")
-        elif ev_type == "model:setCameraTarget":
-            model_changes_lines.append("Focused camera on the highlighted muscles")
         elif ev_type == "model:resetCamera":
             model_changes_lines.append("Reset camera view")
     
@@ -1173,10 +1156,14 @@ async def responder_node(
 
     # Clean up internal fields
     new_state["assistant_draft"] = None
-    new_state["_route"] = None  # Clear routing decision
-    
     # Clear events after generation to prevent duplicate events on next call
     new_state["events"] = []
+    new_state["_route_camera"] = False
+    new_state["_route_muscle"] = False
+    new_state["_route"] = None
+    new_state["_planner_iterations"] = 0
+    new_state["_just_executed_muscle_tools"] = False
+    new_state["_tool_executions"] = 0
 
     return new_state 
 
@@ -1455,7 +1442,7 @@ Analyze the highlighted muscles and determine the optimal camera position.
 - For chest muscles (Pectoralis): use Upper Body Front View
 - For hamstrings or glutes: use Lower Body Back View
 - For quadriceps or calves: use Lower Body Front View
-- If no muscles are highlighted: use reset_camera
+- If no muscles you don't need to move the camera
 
 DO NOT return a response without using a tool.
 """
@@ -1501,200 +1488,9 @@ Camera: {camera_str}
         for i, call in enumerate(pending_camera_tool_calls):
             print(f"[camera_control_agent] Tool {i+1}: {call.get('name')} - {call.get('args')}")
     else:
+        # [Keep your fallback logic for when no tool calls are generated]
         print(f"[camera_control_agent] WARNING: No tool calls generated despite setting tool_choice='required'")
-        print(f"[camera_control_agent] LLM response content: {getattr(llm_response, 'content', '')}")
-        
-        # Create a fallback camera position based on highlighted muscles
-        # Using a second LLM call with a different prompt
-        fallback_prompt = """
-You are a camera control expert for a 3D muscle model.
-Based on these highlighted muscles: {highlighted_muscles}
-
-Choose the BEST camera view from these options:
-1. Upper Body Front (chest, biceps, abs)
-2. Upper Body Back (back, shoulders, lats)
-3. Lower Body Front (quads, calves)
-4. Lower Body Back (glutes, hamstrings)
-5. Default Reset View (full body)
-
-Respond with ONLY the number of the best view.
-"""
-        try:
-            # Call a fallback LLM to determine the best view
-            fallback_system = SystemMessage(content=fallback_prompt.format(highlighted_muscles=highlighted_muscles_str))
-            fallback_user = HumanMessage(content="Which camera view should I use for these muscles?")
-            
-            # Use a simple LLM call for the fallback
-            fallback_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10)
-            fallback_response = await fallback_llm.ainvoke([fallback_system, fallback_user])
-            fallback_text = fallback_response.content.strip()
-            
-            print(f"[camera_control_agent] Fallback camera view selection: {fallback_text}")
-            
-            # Extract a view number if present
-            view_num = 5  # Default to reset view
-            for num in range(1, 6):
-                if str(num) in fallback_text:
-                    view_num = num
-                    break
-            
-            # Apply the appropriate camera view based on the selection
-            if view_num == 1:  # Upper Body Front
-                pending_camera_tool_calls = [
-                    {"name": "set_camera_position", "args": {"x": -0.03, "y": 0.83, "z": 3.48}},
-                    {"name": "set_camera_target", "args": {"x": -0.03, "y": 0.83, "z": 0.0}}
-                ]
-                print("[camera_control_agent] Using fallback Upper Body Front View")
-            elif view_num == 2:  # Upper Body Back
-                pending_camera_tool_calls = [
-                    {"name": "set_camera_position", "args": {"x": 0.20, "y": 1.53, "z": -3.70}},
-                    {"name": "set_camera_target", "args": {"x": 0.07, "y": 0.77, "z": 0.16}}
-                ]
-                print("[camera_control_agent] Using fallback Upper Body Back View")
-            elif view_num == 3:  # Lower Body Front
-                pending_camera_tool_calls = [
-                    {"name": "set_camera_position", "args": {"x": -0.0007, "y": -0.50, "z": 4.45}},
-                    {"name": "set_camera_target", "args": {"x": 0.0006, "y": -0.50, "z": 0.0}}
-                ]
-                print("[camera_control_agent] Using fallback Lower Body Front View")
-            elif view_num == 4:  # Lower Body Back
-                pending_camera_tool_calls = [
-                    {"name": "set_camera_position", "args": {"x": 0.20, "y": 0.26, "z": -4.21}},
-                    {"name": "set_camera_target", "args": {"x": 0.06, "y": -0.56, "z": -0.11}}
-                ]
-                print("[camera_control_agent] Using fallback Lower Body Back View")
-            else:  # Default Reset View
-                pending_camera_tool_calls = [
-                    {"name": "reset_camera", "args": {}}
-                ]
-                print("[camera_control_agent] Using fallback Reset View")
-                
-        except Exception as e:
-            print(f"[camera_control_agent] Error in fallback camera selection: {e}")
-            # Default to reset_camera if all else fails
-            pending_camera_tool_calls = [
-                {"name": "reset_camera", "args": {}}
-            ]
-            print("[camera_control_agent] Using default reset_camera due to fallback error")
-    
-    # DIRECTLY EXECUTE CAMERA TOOLS HERE INSTEAD OF JUST STORING THEM
-    # Collect events from state
-    events_collected = new_state.get("events", []).copy()
-    print(f"[camera_control_agent] Directly executing {len(pending_camera_tool_calls)} camera tools")
-    
-    for call in pending_camera_tool_calls:
-        try:
-            tool_name = call.get("name", "")
-            tool_args = call.get("args", {})
-            
-            if tool_name == "set_camera_position":
-                x = float(tool_args.get("x", 0))
-                y = float(tool_args.get("y", 0))
-                z = float(tool_args.get("z", 0))
-                
-                # Ensure values are within reasonable ranges
-                x = max(-7, min(7, x))
-                y = max(-1, min(2, y))
-                z = max(-7, min(7, z))
-                
-                # Create position object
-                position = {"x": x, "y": y, "z": z}
-                
-                # Create event
-                event = {
-                    "type": "model:setCameraPosition",
-                    "payload": {"position": position}
-                }
-                
-                # Add to events
-                events_collected.append(event)
-                
-                # Update camera state
-                camera = new_state.get("camera", {"position": {}, "target": {}}).copy()
-                camera["position"] = position
-                
-                # Update state directly
-                new_state["camera"] = camera
-                
-                print(f"[camera_control_agent] Executed set_camera_position with {x}, {y}, {z}")
-                
-                # Stream event if writer available
-                if writer:
-                    print(f"[camera_control_agent] Streaming camera position event to frontend")
-                    await writer({"type": "event", "content": event})
-                
-            elif tool_name == "set_camera_target":
-                x = float(tool_args.get("x", 0))
-                y = float(tool_args.get("y", 0))
-                z = float(tool_args.get("z", 0))
-                
-                # Ensure values are within reasonable ranges
-                x = max(-0.2, min(0.2, x))
-                y = max(-0.6, min(1, y))
-                z = max(-0.2, min(0.2, z))
-                
-                # Create target object
-                target = {"x": x, "y": y, "z": z}
-                
-                # Create event
-                event = {
-                    "type": "model:setCameraTarget",
-                    "payload": {"target": target}
-                }
-                
-                # Add to events
-                events_collected.append(event)
-                
-                # Update camera state
-                camera = new_state.get("camera", {"position": {}, "target": {}}).copy()
-                camera["target"] = target
-                
-                # Update state directly
-                new_state["camera"] = camera
-                
-                print(f"[camera_control_agent] Executed set_camera_target with {x}, {y}, {z}")
-                
-                # Stream event if writer available
-                if writer:
-                    print(f"[camera_control_agent] Streaming camera target event to frontend")
-                    await writer({"type": "event", "content": event})
-                
-            elif tool_name == "reset_camera":
-                # Create event
-                event = {
-                    "type": "model:resetCamera",
-                    "payload": {}
-                }
-                
-                # Add to events
-                events_collected.append(event)
-                
-                # Use the optimal Full Body Front view
-                default_position = {"x": 0, "y": 1, "z": 6.5}
-                default_target = {"x": 0, "y": 0, "z": 0}
-                camera = {
-                    "position": default_position,
-                    "target": default_target
-                }
-                
-                # Update state directly
-                new_state["camera"] = camera
-                
-                print("[camera_control_agent] Executed reset_camera")
-                
-                # Stream event if writer available
-                if writer:
-                    print(f"[camera_control_agent] Streaming camera reset event to frontend")
-                    await writer({"type": "event", "content": event})
-            
-            else:
-                print(f"[camera_control_agent] Unknown camera tool: {tool_name}")
-                
-        except Exception as e:
-            print(f"[camera_control_agent] Error executing camera tool {call}: {e}")
-    
-    # Update the events in state
-    new_state["events"] = events_collected
+        # [Keep your fallback tool creation code...]
     
     # Mark camera control as completed in the control history
     control_history = new_state.get("_control_history", {})
@@ -1707,9 +1503,9 @@ Respond with ONLY the number of the best view.
     assistant_draft += "\n\nI'm adjusting the camera to give you the best view of the highlighted muscles."
     new_state["assistant_draft"] = assistant_draft
         
-    # We still store the tool calls in case they're needed for debugging,
-    # but we don't need to execute them again
-    new_state["pending_camera_tool_calls"] = None
-    new_state["pending_tool_calls"] = None
+    # REMOVE all the direct tool execution code and just store the tool calls
+    new_state["pending_camera_tool_calls"] = pending_camera_tool_calls
+    
+    # Don't clear the _route_camera flag here - let execute_tools handle that
 
-    return new_state 
+    return new_state

@@ -36,3 +36,12 @@ class ModelState(TypedDict):
     # be turned into the final assistant message once all tools are executed and the
     # responder LLM runs.
     assistant_draft: Optional[str]
+    _route_camera: Optional[bool]
+    _route_muscle: Optional[bool]
+    _route: Optional[str]
+    _planner_iterations: Optional[int]
+    _tool_executions: Optional[int]
+    _just_executed_muscle_tools: Optional[bool]
+    pending_muscle_tool_calls: Optional[List[Dict[str, Any]]]
+    pending_camera_tool_calls: Optional[List[Dict[str, Any]]]
+    _control_history: Optional[Dict[str, Any]]

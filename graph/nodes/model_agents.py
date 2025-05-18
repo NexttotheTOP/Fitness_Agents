@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import copy
 from typing import Dict, List, Any, Tuple, Literal, Union, Optional, Callable, Annotated
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, FunctionMessage
@@ -17,7 +20,8 @@ from graph.tools import (
     toggle_animation_tool,
     set_camera_position_tool,
     set_camera_target_tool,
-    reset_camera_tool
+    reset_camera_tool,
+    set_camera_view_tool
 )
 import json
 import asyncio
@@ -33,6 +37,7 @@ __all__ = [
     "toggle_animation_tool",
     "set_camera_position_tool",
     "set_camera_target_tool", 
+    "set_camera_view_tool",
     "reset_camera_tool",
     "model_agent",
     "MUSCLE_MAPPING_STR",
@@ -179,8 +184,7 @@ When highlighting muscles related to specific movements or exercises, use these 
 [Tool Usage Instructions]
 - **select_muscles(muscle_names: list, colors: dict)**: Highlight specific muscles. Always use the exact muscle names from [Available Muscles]. The `colors` argument should be a dictionary mapping each muscle name to a hex color (e.g., `{{"Biceps_Brachii": "#FFD600"}}`). If the user does not specify colors, assign a distinct, visually clear color to each muscle.
 - **toggle_muscle(muscle_name: str, color: str)**: Toggle highlight for a single muscle. Use the correct muscle name and a hex color.
-- **set_camera_position(x: float, y: float, z: float)**: Move the camera to a specific position. Use the predefined presets and guidelines from the [Camera Control Guidelines] section.
-- **set_camera_target(x: float, y: float, z: float)**: Set what the camera looks at. For most views, keep x and z near 0, and set y to match the region of interest.
+- **set_camera_view(position_x: float, position_y: float, position_z: float, target_x: float, target_y: float, target_z: float)**: Set both camera position and target in a single call. Use the predefined presets from the [Camera Control Guidelines] section.
 - **reset_camera()**: Reset the camera to the default full body front view.
 
 [Camera Control Guidelines]
@@ -259,6 +263,7 @@ TOOL_MAP = {
     "toggle_animation": toggle_animation_tool,
     "set_camera_position": set_camera_position_tool,
     "set_camera_target": set_camera_target_tool,
+    "set_camera_view": set_camera_view_tool,
     "reset_camera": reset_camera_tool
 }
 
@@ -266,8 +271,7 @@ TOOL_MAP = {
 MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION = [
     select_muscles_tool,
     toggle_muscle_tool,
-    set_camera_position_tool,
-    set_camera_target_tool,
+    set_camera_view_tool,
     reset_camera_tool
 ]
 
@@ -473,6 +477,50 @@ async def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) 
                     
                     # Update camera state
                     camera = current_state.get("camera", {"position": {}, "target": {}}).copy()
+                    camera["target"] = target
+                    
+                    # Update state
+                    current_state["camera"] = camera
+                
+                elif tool_name == "set_camera_view":
+                    # Extract position coordinates
+                    position_x = tool_args.get("position_x", 0)
+                    position_y = tool_args.get("position_y", 0)
+                    position_z = tool_args.get("position_z", 0)
+                    
+                    # Extract target coordinates
+                    target_x = tool_args.get("target_x", 0)
+                    target_y = tool_args.get("target_y", 0)
+                    target_z = tool_args.get("target_z", 0)
+                    
+                    print(f"Setting camera view: position: ({position_x}, {position_y}, {position_z}), target: ({target_x}, {target_y}, {target_z})")
+                    
+                    # Ensure position values are within reasonable ranges
+                    position_x = max(-7, min(7, position_x))
+                    position_y = max(-1, min(2, position_y))
+                    position_z = max(-7, min(7, position_z))
+                    
+                    # Ensure target values are within reasonable ranges
+                    target_x = max(-0.2, min(0.2, target_x))
+                    target_y = max(-0.6, min(1, target_y))
+                    target_z = max(-0.2, min(0.2, target_z))
+                    
+                    # Create position and target objects
+                    position = {"x": position_x, "y": position_y, "z": position_z}
+                    target = {"x": target_x, "y": target_y, "z": target_z}
+                    
+                    # Create a single combined event
+                    event = {
+                        "type": "model:setCameraView",
+                        "payload": {"position": position, "target": target}
+                    }
+                    
+                    # Add to events list
+                    all_events.append(event)
+                    
+                    # Update camera state
+                    camera = current_state.get("camera", {"position": {}, "target": {}}).copy()
+                    camera["position"] = position
                     camera["target"] = target
                     
                     # Update state

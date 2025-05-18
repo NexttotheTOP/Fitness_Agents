@@ -5,6 +5,7 @@ from graph.tools.model_control import (
     toggle_animation_tool,
     set_camera_position_tool,
     set_camera_target_tool,
+    set_camera_view_tool,
     reset_camera_tool,
     MODEL_CONTROL_TOOL_FUNCTIONS
 )
@@ -16,6 +17,7 @@ __all__ = [
     "toggle_animation_tool",
     "set_camera_position_tool",
     "set_camera_target_tool",
+    "set_camera_view_tool",
     "reset_camera_tool",
     "MODEL_CONTROL_TOOL_FUNCTIONS"
 ] 

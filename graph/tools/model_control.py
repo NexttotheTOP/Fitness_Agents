@@ -235,6 +235,78 @@ def set_camera_target_tool(x: float, y: float, z: float, state: Annotated[AgentS
     print(f"Returning result with {len(unique_events)} events")
     return result
 
+class SetCameraViewInput(BaseModel):
+    """Set both camera position and target in a single call."""
+    position_x: float = Field(..., description="X coordinate of camera position.")
+    position_y: float = Field(..., description="Y coordinate of camera position.")
+    position_z: float = Field(..., description="Z coordinate of camera position.")
+    target_x: float = Field(..., description="X coordinate of camera target (look-at point).")
+    target_y: float = Field(..., description="Y coordinate of camera target (look-at point).")
+    target_z: float = Field(..., description="Z coordinate of camera target (look-at point).")
+
+@tool(
+    "set_camera_view",
+    args_schema=SetCameraViewInput,
+    return_direct=False,
+    description="""Set both camera position and target in a single call.
+    
+    Common view presets:
+    - Upper Body Front View (chest, biceps, abs): 
+      position: x: -0.03, y: 0.83, z: 3.48, target: x: -0.03, y: 0.83, z: 0.0
+    - Upper Body Back View (back, shoulders): 
+      position: x: 0.20, y: 1.53, z: -3.70, target: x: 0.07, y: 0.77, z: 0.16
+    - Lower Body Front View (quads, calves): 
+      position: x: -0.0007, y: -0.50, z: 4.45, target: x: 0.0006, y: -0.50, z: 0.0
+    - Lower Body Back View (glutes, hamstrings): 
+      position: x: 0.20, y: 0.26, z: -4.21, target: x: 0.06, y: -0.56, z: -0.11
+    """
+)
+def set_camera_view_tool(
+    position_x: float, position_y: float, position_z: float,
+    target_x: float, target_y: float, target_z: float,
+    state: Annotated[AgentState, InjectedState]
+) -> Dict[str, Any]:
+    """Execute camera position and target change in a single operation."""
+    print(f"set_camera_view_tool called with position: ({position_x}, {position_y}, {position_z}), target: ({target_x}, {target_y}, {target_z})")
+    
+    # Ensure position values are within reasonable ranges
+    position_x = max(-7, min(7, position_x))
+    position_y = max(-1, min(2, position_y))
+    position_z = max(-7, min(7, position_z))
+    
+    # Ensure target values are within reasonable ranges
+    target_x = max(-0.2, min(0.2, target_x))
+    target_y = max(-0.6, min(1, target_y))
+    target_z = max(-0.2, min(0.2, target_z))
+    
+    # Create position and target objects
+    position = {"x": position_x, "y": position_y, "z": position_z}
+    target = {"x": target_x, "y": target_y, "z": target_z}
+    
+    # Create a single combined event
+    event = {
+        "type": "model:setCameraView",
+        "payload": {"position": position, "target": target}
+    }
+    events = state.get("events", []).copy()
+    events.append(event)
+    
+    # Update camera state
+    camera = state.get("camera", {"position": {}, "target": {}}).copy()
+    camera["position"] = position
+    camera["target"] = target
+    
+    # Deduplicate events
+    unique_events = _dedup_events(events)
+    
+    print(f"Added event: {event}")
+    result = {
+        "events": unique_events,
+        "camera": camera
+    }
+    print(f"Returning result with {len(unique_events)} events")
+    return result
+
 @tool("reset_camera", return_direct=False)
 def reset_camera_tool(state: Annotated[AgentState, InjectedState]) -> Dict[str, Any]:
     """Reset the camera to the default position and target."""
@@ -291,7 +363,6 @@ MODEL_CONTROL_TOOL_FUNCTIONS = [
     toggle_muscle_tool,
     set_animation_frame_tool,
     toggle_animation_tool,
-    set_camera_position_tool,
-    set_camera_target_tool,
+    set_camera_view_tool,
     reset_camera_tool,
 ] 
