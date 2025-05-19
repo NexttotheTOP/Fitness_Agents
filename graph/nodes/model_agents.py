@@ -15,7 +15,6 @@ from graph.model_state import ModelState
 from graph.tools import (
     MODEL_CONTROL_TOOL_FUNCTIONS,
     select_muscles_tool,
-    toggle_muscle_tool,
     set_animation_frame_tool,
     toggle_animation_tool,
     set_camera_position_tool,
@@ -32,7 +31,6 @@ __all__ = [
     "MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION",
     "TOOL_MAP",
     "select_muscles_tool",
-    "toggle_muscle_tool",
     "set_animation_frame_tool",
     "toggle_animation_tool",
     "set_camera_position_tool",
@@ -97,7 +95,7 @@ PUSHING_MUSCLES:
 
 PULLING_MUSCLES:
   - Back: Latissimus_Dorsi, Latissimus_Dorsi_R, Rhomboideus_Major, Rhomboideus_Major_R, Rhomboideus_Minor, Rhomboideus_Minor_R, Trapezius_01_Upper, Trapezius_01_Upper_R, Trapezius_02_Middle, Trapezius_02_Middle_R, Trapezius_03_Lower, Trapezius_03_Lower_R
-  - Arms: Biceps_Brachii, Biceps_Brachii_R
+  - Arms: Biceps_Brachii, Biceps_Brachii_R, Brachialis, Brachialis_R
 
 CORE_MUSCLES:
   - Abdomen: Rectus_Abdominis, Rectus_Abdominis_R, External_Oblique, External_Oblique_R
@@ -135,95 +133,95 @@ Naming Rules:
 '''
 
 # Unified system prompt for all model control
-SYSTEM_PROMPT = f"""
-[Persona]
-You're an enthusiastic, experienced fitness coach who LOVES using the 3D anatomy model tools to help clients understand their muscles better. You're energetic, motivating, and speak like a real gym trainer - not a medical textbook. 
-You get excited about using the muscle highlighting tools and camera controls to create the perfect demonstration!
+# SYSTEM_PROMPT = f"""
+# [Persona]
+# You're an enthusiastic, experienced fitness coach who LOVES using the 3D anatomy model tools to help clients understand their muscles better. You're energetic, motivating, and speak like a real gym trainer - not a medical textbook. 
+# You get excited about using the muscle highlighting tools and camera controls to create the perfect demonstration!
 
-[Core Focus]
-- Help users achieve their fitness goals by explaining exercises, movements, and muscle functions.
-- Use the tools to control the 3D model to show muscles in the context of workouts and training, not just for anatomy education.
-- Connect every muscle explanation to real-world fitness benefits and practical exercises.
-- Use the muscle highlighting tools first, then adjust the camera for the clearest view!
+# [Core Focus]
+# - Help users achieve their fitness goals by explaining exercises, movements, and muscle functions.
+# - Use the tools to control the 3D model to show muscles in the context of workouts and training, not just for anatomy education.
+# - Connect every muscle explanation to real-world fitness benefits and practical exercises.
+# - Use the muscle highlighting tools first, then adjust the camera for the clearest view!
 
-[Task]
-- Proactively demonstrate relevant fitness muscles and anatomy for the user's question using the 3D model.
-- For simple, direct questions about specific muscles or movements, immediately highlight the relevant muscles.
-- Unless the user asks for a specific muscle, prioritize highlighting the whole muscle group(s) related to the question.
-- For complex questions requiring multiple steps or extensive highlighting, first explain your approach.
-- Always use the exact muscle names as defined in the [Available Muscles] section.
-- When the user mentions a muscle group, ambiguous muscle, or common name (e.g., "bicep"), expand it to all relevant anatomical muscles using the [Available Muscles], [Functional Muscle Groups], and [Exercise-Specific Muscle Groups] sections.
-- After highlighting muscles, adjust the camera to the best angle to demonstrate the relevant anatomy.
-- Use distinct, visually clear colors for each muscle (unless the user requests a specific color).
-- Report back what changes you made, including which muscles were highlighted and their colors.
+# [Task]
+# - Proactively demonstrate relevant fitness muscles and anatomy for the user's question using the 3D model.
+# - For simple, direct questions about specific muscles or movements, immediately highlight the relevant muscles.
+# - Unless the user asks for a specific muscle, prioritize highlighting the whole muscle group(s) related to the question.
+# - For complex questions requiring multiple steps or extensive highlighting, first explain your approach.
+# - Always use the exact muscle names as defined in the [Available Muscles] section.
+# - When the user mentions a muscle group, ambiguous muscle, or common name (e.g., "bicep"), expand it to all relevant anatomical muscles using the [Available Muscles], [Functional Muscle Groups], and [Exercise-Specific Muscle Groups] sections.
+# - After highlighting muscles, adjust the camera to the best angle to demonstrate the relevant anatomy.
+# - Use distinct, visually clear colors for each muscle (unless the user requests a specific color).
+# - Report back what changes you made, including which muscles were highlighted and their colors.
 
-[Naming Instructions]
-- Use PascalCase with underscores for all muscle names (e.g., Zygomaticus_Major, Pectoralis_Major_01_Clavicular).
-- For right-side muscles, append _R (e.g., Gluteus_Maximus_R).
-- For left-side muscles, use the base name with NO suffix (e.g., Gluteus_Maximus).
-- Do NOT use _L, spaces, lowercase, or any other formats.
+# [Naming Instructions]
+# - Use PascalCase with underscores for all muscle names (e.g., Zygomaticus_Major, Pectoralis_Major_01_Clavicular).
+# - For right-side muscles, append _R (e.g., Gluteus_Maximus_R).
+# - For left-side muscles, use the base name with NO suffix (e.g., Gluteus_Maximus).
+# - Do NOT use _L, spaces, lowercase, or any other formats.
 
-[Available Muscles]
-The 3D model has the following muscles arranged by region. Always use these exact names:
-{MUSCLE_MAPPING_STR}
+# [Available Muscles]
+# The 3D model has the following muscles arranged by region. Always use these exact names:
+# {MUSCLE_MAPPING_STR}
 
-[Functional Muscle Groups]
-When highlighting muscles related to specific movements or exercises, use these predefined groups:
-{FUNCTIONAL_GROUPS_STR}
+# [Functional Muscle Groups]
+# When highlighting muscles related to specific movements or exercises, use these predefined groups:
+# {FUNCTIONAL_GROUPS_STR}
 
-[Muscle Pairing Rules]
-{MUSCLE_PAIRING_RULES}
+# [Muscle Pairing Rules]
+# {MUSCLE_PAIRING_RULES}
 
-[Naming Rules]
-{MUSCLE_NAMING_RULES}
+# [Naming Rules]
+# {MUSCLE_NAMING_RULES}
 
-[Current Model State]
-- Highlighted muscles (with colors): {{highlighted_muscles_str}}
-- Camera: {{camera_str}}
+# [Current Model State]
+# - Highlighted muscles (with colors): {{highlighted_muscles_str}}
+# - Camera: {{camera_str}}
 
-[Tool Usage Instructions]
-- **select_muscles(muscle_names: list, colors: dict)**: Highlight specific muscles. Always use the exact muscle names from [Available Muscles]. The `colors` argument should be a dictionary mapping each muscle name to a hex color (e.g., `{{"Biceps_Brachii": "#FFD600"}}`). If the user does not specify colors, assign a distinct, visually clear color to each muscle.
-- **toggle_muscle(muscle_name: str, color: str)**: Toggle highlight for a single muscle. Use the correct muscle name and a hex color.
-- **set_camera_view(position_x: float, position_y: float, position_z: float, target_x: float, target_y: float, target_z: float)**: Set both camera position and target in a single call. Use the predefined presets from the [Camera Control Guidelines] section.
-- **reset_camera()**: Reset the camera to the default full body front view.
+# [Tool Usage Instructions]
+# - **select_muscles(muscle_names: list, colors: dict)**: Highlight specific muscles. Always use the exact muscle names from [Available Muscles]. The `colors` argument should be a dictionary mapping each muscle name to a hex color (e.g., `{{"Biceps_Brachii": "#FFD600"}}`). If the user does not specify colors, assign a distinct, visually clear color to each muscle.
+# - **toggle_muscle(muscle_name: str, color: str)**: Toggle highlight for a single muscle. Use the correct muscle name and a hex color.
+# - **set_camera_view(position_x: float, position_y: float, position_z: float, target_x: float, target_y: float, target_z: float)**: Set both camera position and target in a single call. Use the predefined presets from the [Camera Control Guidelines] section.
+# - **reset_camera()**: Reset the camera to the default full body front view.
 
-[Camera Control Guidelines]
-For the clearest demonstrations, ALWAYS use these specific presets based on the muscle group:
+# [Camera Control Guidelines]
+# For the clearest demonstrations, ALWAYS use these specific presets based on the muscle group:
 
-Upper Body Front View (for chest, biceps, abs):
-- Position: x: -0.03, y: 0.83, z: 3.48
-- Target: x: -0.03, y: 0.83, z: ~0
+# Upper Body Front View (for chest, biceps, abs):
+# - Position: x: -0.03, y: 0.83, z: 3.48
+# - Target: x: -0.03, y: 0.83, z: ~0
 
-Upper Body Back View (for back, shoulders):
-- Position: x: 0.20, y: 1.53, z: -3.70
-- Target: x: 0.07, y: 0.77, z: 0.16
+# Upper Body Back View (for back, shoulders):
+# - Position: x: 0.20, y: 1.53, z: -3.70
+# - Target: x: 0.07, y: 0.77, z: 0.16
 
-Lower Body Front View (for quads, calves):
-- Position: x: -0.0007, y: -0.50, z: 4.45
-- Target: x: 0.0006, y: -0.50, z: 0.00006
+# Lower Body Front View (for quads, calves):
+# - Position: x: -0.0007, y: -0.50, z: 4.45
+# - Target: x: 0.0006, y: -0.50, z: 0.00006
 
-Lower Body Back View (for glutes, hamstrings):
-- Position: x: 0.20, y: 0.26, z: -4.21
-- Target: x: 0.06, y: -0.56, z: -0.11
+# Lower Body Back View (for glutes, hamstrings):
+# - Position: x: 0.20, y: 0.26, z: -4.21
+# - Target: x: 0.06, y: -0.56, z: -0.11
 
-[Best Practices for Tool Use]
-- First highlight the relevant muscles, then adjust the camera for the best view!
-- Never invent muscle names. Only use names from [Available Muscles].
-- When highlighting multiple muscles, always provide a `colors` dictionary mapping each muscle to a color.
-- If the user requests a group or region, expand it to the correct list of muscle names using the [Functional Muscle Groups] or [Exercise-Specific Muscle Groups] sections.
-- If the user requests "both sides" or "bilateral", include both the base name and the "_R" version for each muscle.
-- For simple questions about specific muscles or movements, immediately highlight the relevant muscles.
-- For complex questions requiring multiple steps, first explain your approach before making changes.
-- If unsure about a muscle name or group, ask the user for clarification.
+# [Best Practices for Tool Use]
+# - First highlight the relevant muscles, then adjust the camera for the best view!
+# - Never invent muscle names. Only use names from [Available Muscles].
+# - When highlighting multiple muscles, always provide a `colors` dictionary mapping each muscle to a color.
+# - If the user requests a group or region, expand it to the correct list of muscle names using the [Functional Muscle Groups] or [Exercise-Specific Muscle Groups] sections.
+# - If the user requests "both sides" or "bilateral", include both the base name and the "_R" version for each muscle.
+# - For simple questions about specific muscles or movements, immediately highlight the relevant muscles.
+# - For complex questions requiring multiple steps, first explain your approach before making changes.
+# - If unsure about a muscle name or group, ask the user for clarification.
 
-[Reporting]
-After using any tools, provide a concise summary of what you changed in the model, including which muscles were highlighted and their colors, and any camera changes.
+# [Reporting]
+# After using any tools, provide a concise summary of what you changed in the model, including which muscles were highlighted and their colors, and any camera changes.
 
-- For every user request to highlight, show, or demonstrate a muscle or group, you MUST use the select_muscles or toggle_muscle tool, even if you have already described it in text.
-- Never just say you will highlight a muscle—always call the tool to actually do it.
-- After highlighting muscles, adjust the camera to the appropriate view using the presets above!
-- After highlighting muscles and adjusting the camera, provide a detailed explanation of what was highlighted and why it's relevant to the user's question.
-"""
+# - For every user request to highlight, show, or demonstrate a muscle or group, you MUST use the select_muscles or toggle_muscle tool, even if you have already described it in text.
+# - Never just say you will highlight a muscle—always call the tool to actually do it.
+# - After highlighting muscles, adjust the camera to the appropriate view using the presets above!
+# - After highlighting muscles and adjusting the camera, provide a detailed explanation of what was highlighted and why it's relevant to the user's question.
+# """
 
 # Response generation prompt - used after tools are executed
 RESPONSE_PROMPT = """
@@ -258,7 +256,6 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, streaming=True)
 # Map of tool names to their actual function implementations
 TOOL_MAP = {
     "select_muscles": select_muscles_tool,
-    "toggle_muscle": toggle_muscle_tool,
     "set_animation_frame": set_animation_frame_tool,
     "toggle_animation": toggle_animation_tool,
     "set_camera_position": set_camera_position_tool,
@@ -270,325 +267,7 @@ TOOL_MAP = {
 # Remove animation tools from tool selection
 MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION = [
     select_muscles_tool,
-    toggle_muscle_tool,
     set_camera_view_tool,
     reset_camera_tool
 ]
 
-def summarize_changes(old_state, new_state):
-    messages = []
-    # Muscles
-    old_muscles = old_state.get("highlighted_muscles", {})
-    new_muscles = new_state.get("highlighted_muscles", {})
-    if new_muscles != old_muscles:
-        if new_muscles:
-            muscle_str = ", ".join(f"{name} (color: {color})" for name, color in new_muscles.items())
-            messages.append(f"I've highlighted the following muscles for you: {muscle_str}.")
-        else:
-            messages.append("I've cleared the muscle highlights.")
-    # Camera position
-    old_pos = old_state.get("camera", {}).get("position", {})
-    new_pos = new_state.get("camera", {}).get("position", {})
-    if new_pos != old_pos:
-        messages.append("I've moved the camera to give you a better view.")
-    # Camera target
-    old_target = old_state.get("camera", {}).get("target", {})
-    new_target = new_state.get("camera", {}).get("target", {})
-    if new_target != old_target:
-        messages.append("I've adjusted what the camera is looking at.")
-    # Animation
-    old_anim = old_state.get("animation", {})
-    new_anim = new_state.get("animation", {})
-    if new_anim != old_anim:
-        if new_anim.get("isPlaying", False):
-            messages.append(f"I've started the animation at frame {new_anim.get('frame', 0)}.")
-        else:
-            messages.append(f"I've paused the animation at frame {new_anim.get('frame', 0)}.")
-    return " ".join(messages) if messages else "I've made the requested changes to the 3D model."
-
-async def model_agent(state: ModelState, writer: Optional[StreamWriter] = None) -> Command[Literal[END]]:
-    print("MODEL_AGENT: writer is", writer)
-    if writer: 
-        writer({"tester": "Streaming custom data while generating, this is fro testing purposes"})
-    # Format state for prompt
-    highlighted_muscles = state.get("highlighted_muscles", {})
-    highlighted_muscles_str = (
-        ", ".join(f"{name} (color: {color})" for name, color in highlighted_muscles.items())
-        if highlighted_muscles else "None"
-    )
-    animation = state.get("animation", {"frame": 0, "isPlaying": False})
-    animation_str = f"Frame: {animation.get('frame', 0)}, Playing: {animation.get('isPlaying', False)}"
-    camera = state.get("camera", {"position": {"x": 0, "y": 1, "z": 7}, "target": {"x": 0, "y": 0, "z": 0}})
-    camera_str = f"Position: {camera.get('position', {})}, Target: {camera.get('target', {})}"
-    
-    system_message = SystemMessage(content=SYSTEM_PROMPT) #.format(
-    #     highlighted_muscles=highlighted_muscles_str, 
-    #     camera=camera_str
-    # ))
-    messages = state.get("messages", [])
-    
-    print(f"\n{'='*50}\nModel agent received state with {len(messages)} messages")
-    for i, msg in enumerate(messages):
-        print(f"Message {i}: role={msg.get('role', 'unknown')}, content={msg.get('content', '')[:50]}...")
-    
-    if not messages or messages[-1]["role"] != "user":
-        print("No messages or last message is not from user, returning without action")
-        return Command(goto=END)
-        
-    user_message = HumanMessage(content=messages[-1]["content"])
-    
-    # Create full conversation history for LLM context
-    conversation_history = []
-    for msg in messages[:-1]:  # Skip the latest user message which we'll add separately
-        if msg["role"] == "user":
-            conversation_history.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            conversation_history.append(AIMessage(content=msg["content"]))
-    
-    # Start with system message, add conversation history, then add latest user message
-    full_prompt = (
-        [system_message]
-        + [SystemMessage(content=f"[Current states of the model]\n\nHighlighted muscles: {highlighted_muscles_str}\nAnimation: {animation_str}\nCamera: {camera_str}")]
-        + [SystemMessage(content="[Conversation History Start]")]
-        + conversation_history
-        + [user_message]
-        + [SystemMessage(content="[Conversation History End]")]
-    )
-    
-    print(f"Sending {len(full_prompt)} messages to LLM: 1 system + {len(conversation_history)} history + 1 new user")
-    
-    if writer:
-        writer({"type": "thinking", "content": "Processing your request..."})
-
-    print(f"Processing user message: {user_message.content}")
-    print(f"Current state before tool call: highlighted_muscles={highlighted_muscles}, events={state.get('events', [])}")
-    
-    # Step 1: Get initial LLM assessment for tools and capture initial thoughts
-    response = await llm.bind_tools(
-        MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION,
-        tool_choice="auto"
-    ).ainvoke(
-        full_prompt
-    )
-    
-    print(f"LLM response type: {type(response)}")
-    print(f"LLM response: {response}")
-
-    # Initialize state for chaining
-    current_state = state.copy()
-    all_events = current_state.get("events", []).copy()
-    initial_assessment = getattr(response, 'content', str(response)) or ""
-    
-    # Step 2: Execute any tools the LLM decided to use
-    if hasattr(response, "tool_calls") and response.tool_calls:
-        print(f"Tool calls detected: {response.tool_calls}")
-        for tool_call in response.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            print(f"Executing tool: {tool_name} with args: {tool_args}")
-
-            try:
-                if tool_name == "select_muscles":
-                    muscle_names = tool_args.get("muscle_names", [])
-                    colors = tool_args.get("colors", None)
-                    print(f"Selecting muscles: {muscle_names} with colors: {colors}")
-                    # Default color if not specified
-                    default_color = "#FFD600"
-                    muscle_color_map = {name: (colors[name] if colors and name in colors else default_color) for name in muscle_names}
-                    event = {
-                        "type": "model:selectMuscles",
-                        "payload": {"muscleNames": muscle_names, "colors": muscle_color_map}
-                    }
-                    all_events.append(event)
-                    current_state["highlighted_muscles"] = muscle_color_map
-                elif tool_name == "toggle_muscle":
-                    muscle_name = tool_args.get("muscle_name", "")
-                    color = tool_args.get("color", None)
-                    print(f"Toggling muscle: {muscle_name} with color: {color}")
-                    event = {
-                        "type": "model:toggleMuscle",
-                        "payload": {"muscleName": muscle_name, "color": color or '#FFD600'}
-                    }
-                    all_events.append(event)
-                    highlighted_muscles = current_state.get("highlighted_muscles", {}).copy()
-                    if muscle_name in highlighted_muscles:
-                        highlighted_muscles.pop(muscle_name)
-                    else:
-                        highlighted_muscles[muscle_name] = color or '#FFD600'
-                    current_state["highlighted_muscles"] = highlighted_muscles
-                elif tool_name == "set_camera_position":
-                    x = tool_args.get("x", 0)
-                    y = tool_args.get("y", 0)
-                    z = tool_args.get("z", 0)
-                    print(f"Setting camera position: x={x}, y={y}, z={z}")
-                    
-                    # Ensure values are within reasonable ranges
-                    # Clamp x between -7 and 7
-                    x = max(-7, min(7, x))
-                    # Clamp y between -1 and 2 (avoiding positions below or too high)
-                    y = max(-1, min(2, y))
-                    # Clamp z between -7 and 7
-                    z = max(-7, min(7, z))
-                    
-                    # Create position object
-                    position = {"x": x, "y": y, "z": z}
-                    
-                    # Create event
-                    event = {
-                        "type": "model:setCameraPosition",
-                        "payload": {"position": position}
-                    }
-                    
-                    # Add to events list
-                    all_events.append(event)
-                    
-                    # Update camera state
-                    camera = current_state.get("camera", {"position": {}, "target": {}}).copy()
-                    camera["position"] = position
-                    
-                    # Update state
-                    current_state["camera"] = camera
-                
-                elif tool_name == "set_camera_target":
-                    x = tool_args.get("x", 0)
-                    y = tool_args.get("y", 0)
-                    z = tool_args.get("z", 0)
-                    print(f"Setting camera target: x={x}, y={y}, z={z}")
-                    
-                    # Ensure values are within reasonable ranges
-                    # Keep target.x close to center (±0.2 range)
-                    x = max(-0.2, min(0.2, x))
-                    # Clamp y between -0.6 and 1 (avoiding targets too low or high)
-                    y = max(-0.6, min(1, y))
-                    # Keep target.z close to center (±0.2 range)
-                    z = max(-0.2, min(0.2, z))
-                    
-                    # Create target object
-                    target = {"x": x, "y": y, "z": z}
-                    
-                    # Create event
-                    event = {
-                        "type": "model:setCameraTarget",
-                        "payload": {"target": target}
-                    }
-                    
-                    # Add to events list
-                    all_events.append(event)
-                    
-                    # Update camera state
-                    camera = current_state.get("camera", {"position": {}, "target": {}}).copy()
-                    camera["target"] = target
-                    
-                    # Update state
-                    current_state["camera"] = camera
-                
-                elif tool_name == "set_camera_view":
-                    # Extract position coordinates
-                    position_x = tool_args.get("position_x", 0)
-                    position_y = tool_args.get("position_y", 0)
-                    position_z = tool_args.get("position_z", 0)
-                    
-                    # Extract target coordinates
-                    target_x = tool_args.get("target_x", 0)
-                    target_y = tool_args.get("target_y", 0)
-                    target_z = tool_args.get("target_z", 0)
-                    
-                    print(f"Setting camera view: position: ({position_x}, {position_y}, {position_z}), target: ({target_x}, {target_y}, {target_z})")
-                    
-                    # Ensure position values are within reasonable ranges
-                    position_x = max(-7, min(7, position_x))
-                    position_y = max(-1, min(2, position_y))
-                    position_z = max(-7, min(7, position_z))
-                    
-                    # Ensure target values are within reasonable ranges
-                    target_x = max(-0.2, min(0.2, target_x))
-                    target_y = max(-0.6, min(1, target_y))
-                    target_z = max(-0.2, min(0.2, target_z))
-                    
-                    # Create position and target objects
-                    position = {"x": position_x, "y": position_y, "z": position_z}
-                    target = {"x": target_x, "y": target_y, "z": target_z}
-                    
-                    # Create a single combined event
-                    event = {
-                        "type": "model:setCameraView",
-                        "payload": {"position": position, "target": target}
-                    }
-                    
-                    # Add to events list
-                    all_events.append(event)
-                    
-                    # Update camera state
-                    camera = current_state.get("camera", {"position": {}, "target": {}}).copy()
-                    camera["position"] = position
-                    camera["target"] = target
-                    
-                    # Update state
-                    current_state["camera"] = camera
-                
-                elif tool_name == "reset_camera":
-                    print("Resetting camera")
-                    
-                    # Create event
-                    event = {
-                        "type": "model:resetCamera",
-                        "payload": {}
-                    }
-                    
-                    # Add to events list
-                    all_events.append(event)
-                    
-                    # Use the optimal Full Body Front view from guidelines
-                    default_position = {"x": 0, "y": 1, "z": 6.5}
-                    default_target = {"x": 0, "y": 0, "z": 0}
-                    camera = {
-                        "position": default_position,
-                        "target": default_target
-                    }
-                    
-                    # Update state
-                    current_state["camera"] = camera
-                
-                print(f"State updates after tool execution: {current_state}")
-                
-            except Exception as e:
-                print(f"ERROR executing tool {tool_name}: {e}")
-
-        # After all tool calls, update the state and events
-        current_state["events"] = all_events
-        
-        # Step 3: Summarize the changes made to the model
-        model_changes = summarize_changes(state, current_state)
-        summary_of_changes = summarize_changes(state, current_state)
-        # Build the new prompt
-        system_message = SystemMessage(content=RESPONSE_PROMPT + f"\nHighlighted muscles: {highlighted_muscles_str}\nAnimation: {animation_str}\nCamera: {camera_str}\nChanges: {summary_of_changes}")
-        user_message = HumanMessage(content=messages[-1]["content"])
-        tool_info_message = HumanMessage(content=f"Tool actions taken: {model_changes}")
-        final_prompt = [system_message] + conversation_history + [user_message, tool_info_message]
-        if writer:
-            async for chunk in llm.astream(final_prompt):
-                print("STREAMING TOKEN:", chunk)
-                token = chunk.content if hasattr(chunk, 'content') else chunk
-                await writer({"type": "response", "content": token})
-            final_message = ""
-        else:
-            final_response = await llm.ainvoke(final_prompt)
-            final_message = final_response.content
-    else:
-        # If no tool calls, use the regular response content
-        if writer:
-            async for chunk in llm.astream(full_prompt):
-                print("STREAMING TOKEN:", chunk)
-                token = chunk.content if hasattr(chunk, 'content') else chunk
-                await writer({"type": "response", "content": token})
-            final_message = ""
-        else:
-            final_message = initial_assessment or "I'll help you with that right away."
-    # Add the response to messages
-    new_messages = messages.copy()
-    new_messages.append({"role": "assistant", "content": final_message})
-    current_state["messages"] = new_messages
-    print(f"Final state updates: {current_state}")
-    print(f"Final message count in state: {len(current_state.get('messages', []))}")
-    current_state["current_agent"] = "model_agent"
-    return Command(goto=END, update=current_state) 

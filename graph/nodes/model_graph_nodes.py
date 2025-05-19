@@ -20,21 +20,18 @@ from langgraph.types import StreamWriter
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 import json
+from datetime import datetime
 
 from graph.model_state import ModelState
 from graph.nodes.model_agents import (
-    SYSTEM_PROMPT,
     RESPONSE_PROMPT,
-    MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION,
     TOOL_MAP,
     MUSCLE_MAPPING_STR,
     MUSCLE_PAIRING_RULES,
     MUSCLE_NAMING_RULES,
     FUNCTIONAL_GROUPS_STR,
     select_muscles_tool,
-    toggle_muscle_tool,
-    set_camera_position_tool,
-    set_camera_target_tool,
+    #toggle_muscle_tool,
     set_camera_view_tool,
     reset_camera_tool,
 )
@@ -42,7 +39,6 @@ from graph.nodes.model_agents import (
 # Define constants for specialized tools
 MUSCLE_CONTROL_TOOLS = [
     select_muscles_tool,
-    toggle_muscle_tool,
 ]
 
 CAMERA_CONTROL_TOOLS = [
@@ -100,6 +96,7 @@ These groups can help identify muscles involved in specific movements or exercis
 
 [Tool Usage Instructions]
 - **select_muscles(muscle_names: list, colors: dict)**: Highlight specific muscles. The `colors` argument MUST be a dictionary mapping each muscle name to a hex color.
+info: Each time you sent a new list of muscles to highlight, the frontend will automatically deselect all muscles that are not in the new list.
 
 [REQUIRED OUTPUT FORMAT]
 For the select_muscles tool, your call MUST include:
@@ -147,6 +144,30 @@ _llm_streaming = ChatOpenAI(model="gpt-4o-mini", temperature=0.3, streaming=True
 
 # Debug mode for verbose logging
 DEBUG_MODE = True
+
+# Global writer registry for temporary storage of active writers
+_active_writers = {}
+
+def register_writer(thread_id, writer):
+    """Register a writer function for a specific thread_id to be used by nodes."""
+    global _active_writers
+    _active_writers[thread_id] = writer
+    print(f"Registered writer for thread {thread_id}")
+    
+def get_writer(thread_id):
+    """Get a previously registered writer or return None if not available."""
+    global _active_writers
+    writer = _active_writers.get(thread_id)
+    if writer:
+        print(f"Retrieved registered writer for thread {thread_id}")
+    return writer
+    
+def clear_writer(thread_id):
+    """Clear a writer after use to prevent memory leaks."""
+    global _active_writers
+    if thread_id in _active_writers:
+        del _active_writers[thread_id]
+        print(f"Cleared writer for thread {thread_id}")
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -279,19 +300,19 @@ async def router_agent(
         # Check for specific muscle groups mentioned in the query
         if "chest" in last_query.lower() and any("pectoralis" in m.lower() for m in highlighted_muscles):
             print(f"[router_agent] Chest muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") in ["toggle_muscle", "select_muscles"] for call in pending_tools):
+            if all(call.get("name") == "select_muscles" for call in pending_tools):
                 new_state["_route"] = "responder"
                 return new_state
                 
         if "back" in last_query.lower() and any(m.lower() in ["latissimus_dorsi", "trapezius", "rhomboideus"] for m in highlighted_muscles):
             print(f"[router_agent] Back muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") in ["toggle_muscle", "select_muscles"] for call in pending_tools):
+            if all(call.get("name") == "select_muscles" for call in pending_tools):
                 new_state["_route"] = "responder"
                 return new_state
                 
         if "leg" in last_query.lower() and any("femor" in m.lower() or "tibia" in m.lower() or "gluteus" in m.lower() for m in highlighted_muscles):
             print(f"[router_agent] Leg muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") in ["toggle_muscle", "select_muscles"] for call in pending_tools):
+            if all(call.get("name") == "select_muscles" for call in pending_tools):
                 new_state["_route"] = "responder"
                 return new_state
     
@@ -353,7 +374,7 @@ async def router_agent(
     
     try:
         # Call the LLM for the final decision
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10, streaming=True)
         response = await llm.ainvoke([system, human])
         
         # Extract the decision (only accept the exact strings we need)
@@ -520,7 +541,7 @@ Remember: Explaining muscles requires showing them - we want to provide visual l
     router_human = HumanMessage(content=context)
     
     # Use a more deterministic model for routing decisions
-    routing_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=500)
+    routing_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=500, streaming=True)
     
     try:
         response = await routing_llm.ainvoke([router_system, router_human])
@@ -576,13 +597,14 @@ Remember: Explaining muscles requires showing them - we want to provide visual l
             control_history = {}
         control_history[f"{current_request_id}_muscle_started"] = True
         
-        # Always follow muscle control with camera control for optimal viewing
-        print(f"[planner_node] Setting up automatic camera positioning after muscle highlighting")
-        new_state["_route_camera"] = True
+        # MODIFIED: We'll now flow directly from muscle_control to camera_control
+        # so we don't need to set _route_camera here. We'll just mark it in the control history
+        # for tracking purposes
+        print(f"[planner_node] Camera control will happen automatically after muscle control")
         control_history[f"{current_request_id}_camera_started"] = True
 
     elif needs_camera_control:
-        print(f"[planner_node] Request requires camera control, routing to camera_control_agent")
+        print(f"[planner_node] Request requires only camera control, routing to camera_control_agent")
         new_state["_route_camera"] = True
         # Mark that we're processing camera control for this request
         if not control_history:
@@ -605,6 +627,25 @@ Remember: Explaining muscles requires showing them - we want to provide visual l
 # ---------------------------------------------------------------------------
 # 2. Tool-executor node
 # ---------------------------------------------------------------------------
+
+def get_color_for_muscle(muscle_name: str) -> str:
+    """Generate a consistent color for a muscle based on its name."""
+    # Simple mapping of muscle groups to colors
+    if any(term in muscle_name.lower() for term in ["pector", "delt", "bicep", "chest"]):
+        return "#FF5555"  # Red for chest/shoulders/biceps
+    elif any(term in muscle_name.lower() for term in ["back", "lat", "trapezius", "rhomb"]):
+        return "#5555FF"  # Blue for back
+    elif any(term in muscle_name.lower() for term in ["gluteus", "glute", "hamstring", "quad", "leg"]):
+        return "#FFFF55"  # Yellow for lower body
+    elif any(term in muscle_name.lower() for term in ["abs", "rectus"]):
+        return "#55FF55"  # Green for abs
+    else:
+        # Generate a color based on hash of muscle name
+        hash_val = hash(muscle_name)
+        r = (hash_val & 0xFF0000) >> 16
+        g = (hash_val & 0x00FF00) >> 8
+        b = hash_val & 0x0000FF
+        return f"#{r:02x}{g:02x}{b:02x}"
 
 async def tool_executor_node(
     state: ModelState,
@@ -641,6 +682,16 @@ async def tool_executor_node(
     if writer is None and context and "writer" in context:
         writer = context["writer"]
         print(f"[tool_executor_node] Got writer from context!")
+    
+    # If still no writer, try to get from global registry using thread_id
+    if writer is None and "thread_id" in new_state:
+        writer = get_writer(new_state["thread_id"])
+        if writer:
+            print(f"[tool_executor_node] Got writer from global registry for thread {new_state['thread_id']}")
+    
+    # Check if this is token-only stream mode
+    is_token_only = new_state.get("_token_only_stream", False)
+    thread_id = new_state.get("thread_id")
     
     # Merge tool calls from both specialized agents
     pending_muscle_calls = new_state.get("pending_muscle_tool_calls") or []
@@ -732,7 +783,6 @@ async def tool_executor_node(
         print(f"[tool_executor_node] Merging {len(all_muscle_selections)} select_muscles calls into one")
         print(f"[tool_executor_node] Combined muscle names: {merged_muscle_names}")
         print(f"[tool_executor_node] Combined colors: {merged_colors}")
-        
         # Create a single merged event
         merged_event = {
             "type": "model:selectMuscles",
@@ -840,36 +890,6 @@ async def tool_executor_node(
                 
                 print(f"[tool_executor_node] Executed select_muscles with {len(muscle_names)} muscles")
                 
-            elif tool_name == "toggle_muscle":
-                muscle_name = tool_args.get("muscle_name", "")
-                color = tool_args.get("color") or "#FFD600"
-                
-                # Create event
-                event = {
-                    "type": "model:toggleMuscle",
-                    "payload": {"muscleName": muscle_name, "color": color}
-                }
-                
-                # Add to events
-                events_collected.append(event)
-                
-                # Update state directly
-                highlighted_muscles = new_state.get("highlighted_muscles", {}).copy()
-                if muscle_name in highlighted_muscles:
-                    highlighted_muscles.pop(muscle_name)
-                else:
-                    highlighted_muscles[muscle_name] = color
-                
-                # Update state directly
-                new_state["highlighted_muscles"] = highlighted_muscles
-                
-                # Set result for event collection
-                tool_result = {
-                    "events": [event],
-                }
-                
-                print(f"[tool_executor_node] Executed toggle_muscle with {muscle_name}")
-                
             # CAMERA TOOLS
             elif tool_name == "set_camera_view":
                 # Extract position coordinates
@@ -967,6 +987,59 @@ async def tool_executor_node(
                         print(f"[tool_executor_node] WRITER EVENT EMITTED WITH TYPE: event, EVENT TYPE: {ev['type']}")
                     else:
                         print(f"[tool_executor_node] Skipping duplicate event: {ev['type']}")
+            
+            # If in token-only mode, check if we have thread_id and use Socket.IO to send events
+            elif is_token_only and thread_id:
+                print(f"[tool_executor_node] In token-only mode, trying Socket.IO for events. Thread ID: {thread_id}")
+                # Import socketio instance 
+                try:
+                    # Import needed only when sending via Socket.IO
+                    import sys
+                    sys.path.append('/Users/wout_vp/Code/Fitness_agents')
+                    from main import sio, thread_to_sid
+
+                    # Check if we have a Socket.IO session for this thread
+                    if thread_id in thread_to_sid:
+                        sid = thread_to_sid[thread_id]
+                        print(f"[tool_executor_node] Found Socket.IO sid {sid} for thread {thread_id}")
+                        
+                        # Send events via Socket.IO
+                        for ev in tool_result.get("events", []):
+                            event_hash = f"{ev['type']}:{json.dumps(ev['payload'])}"
+                            if event_hash not in tracked_events:
+                                tracked_events.add(event_hash)
+                                print(f"[tool_executor_node] Sending event via Socket.IO: {ev['type']}")
+                                # Use asyncio.create_task to avoid awaiting here (which would block streaming)
+                                import asyncio
+                                asyncio.create_task(sio.emit('model_event', ev, to=sid))
+                                print(f"[tool_executor_node] Scheduled Socket.IO event: {ev['type']}")
+                                
+                                # CRITICAL FIX: Also emit via the special writer if available
+                                if writer:
+                                    try:
+                                        await writer({"type": "event", "content": ev})
+                                        print(f"[tool_executor_node] Also emitted event via writer: {ev['type']}")
+                                    except Exception as writer_err:
+                                        print(f"[tool_executor_node] Error sending via writer: {writer_err}")
+                            else:
+                                print(f"[tool_executor_node] Skipping duplicate Socket.IO event: {ev['type']}")
+                    else:
+                        print(f"[tool_executor_node] No Socket.IO session ID found for thread {thread_id}")
+                        print(f"[tool_executor_node] Available threads: {list(thread_to_sid.keys())}")
+                        # Try using the global socketio instance directly
+                        try:
+                            import asyncio
+                            # Try broadcasting as a fallback
+                            for ev in tool_result.get("events", []):
+                                asyncio.create_task(sio.emit('model_event', ev))
+                                print(f"[tool_executor_node] Scheduled BROADCAST Socket.IO event: {ev['type']}")
+                        except Exception as e:
+                            print(f"[tool_executor_node] Error sending broadcast event: {e}")
+                except Exception as e:
+                    print(f"[tool_executor_node] Error sending event via Socket.IO: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
         except Exception as err:
             print(f"[tool_executor_node] Error executing {call}: {err}")
             import traceback
@@ -1004,25 +1077,18 @@ async def tool_executor_node(
     new_state["pending_muscle_tool_calls"] = None
     new_state["pending_camera_tool_calls"] = None
 
-    # Make routing decision based on what we just executed
-    if pending_camera_tool_calls and len(pending_camera_tool_calls) > 0:
-        # We just executed camera tools directly from camera_control
-        print(f"[tool_executor_node] Just processed camera tools, routing to responder")
-        # Clear routing flag to break the loop
-        new_state["_route_camera"] = False
-        new_state["_route"] = "responder"
-    elif new_state.get("_route_camera") and just_executed_muscle_tools:
-        # We just processed muscle tools and camera is next in sequence
-        print(f"[tool_executor_node] Muscle tools executed, routing directly to camera_control")
-        # Clear our execution flag so we don't re-route on next execution
-        new_state["_just_executed_muscle_tools"] = False
-        # Route to camera_control
-        new_state["_route"] = "camera_control"
-    else:
-        # Default to responder for all other cases to avoid loops
-        print(f"[tool_executor_node] No routing condition matched, going to responder")
-        new_state["_route_camera"] = False
-        new_state["_route"] = "responder"
+    # MODIFIED: Verify and log highlighted_muscles state to ensure it carries through
+    highlighted_muscles = new_state.get("highlighted_muscles", {})
+    print(f"[tool_executor_node] After execution, highlighted_muscles has {len(highlighted_muscles)} muscles")
+    if highlighted_muscles:
+        print(f"[tool_executor_node] First few highlighted muscles: {list(highlighted_muscles.keys())[:3]}")
+
+    # MODIFIED: With the new graph flow, we always go to responder after tool execution
+    # Remove conditional routing and always set route to responder
+    new_state["_route"] = "responder"
+    new_state["_route_camera"] = False
+    new_state["_just_executed_muscle_tools"] = False
+    print(f"[tool_executor_node] Setting route to responder after tool execution")
 
     # Optionally provide a quick state-update chunk
     if writer:
@@ -1033,11 +1099,43 @@ async def tool_executor_node(
                 print(f"[tool_executor_node] Event {i+1}: {ev['type']} - {json.dumps(ev['payload'])[:100]}")
         
         # Send a final update for all events
-        for ev in unique_events:
-            await writer({"type": "event", "content": ev})
-            print(f"[tool_executor_node] Sent final event: {ev['type']}")
-        
         await writer({"type": "updates", "content": {"events": unique_events}})
+    
+    # For token-only streams, also send events via Socket.IO
+    elif is_token_only and thread_id and unique_events:
+        print(f"[tool_executor_node] In token-only mode, sending all events via Socket.IO")
+        try:
+            # Import needed only when sending via Socket.IO
+            import sys
+            sys.path.append('/Users/wout_vp/Code/Fitness_agents')
+            from main import sio, thread_to_sid
+            
+            if thread_id in thread_to_sid:
+                sid = thread_to_sid[thread_id]
+                print(f"[tool_executor_node] Sending all events via Socket.IO to sid {sid}")
+                
+                # Use asyncio to schedule event sending
+                import asyncio
+                for ev in unique_events:
+                    asyncio.create_task(sio.emit('model_event', ev, to=sid))
+                
+                # Also send the full batch as an update
+                asyncio.create_task(sio.emit('model_events', {"events": unique_events}, to=sid))
+                print(f"[tool_executor_node] Scheduled batch of {len(unique_events)} events via Socket.IO")
+            else:
+                print(f"[tool_executor_node] No Socket.IO session found for thread {thread_id}")
+                print(f"[tool_executor_node] Available threads: {list(thread_to_sid.keys())}")
+                
+                # Try broadcasting as a fallback
+                import asyncio
+                for ev in unique_events:
+                    asyncio.create_task(sio.emit('model_event', ev))
+                asyncio.create_task(sio.emit('model_events', {"events": unique_events}))
+                print(f"[tool_executor_node] Scheduled BROADCAST of {len(unique_events)} events via Socket.IO")
+        except Exception as e:
+            print(f"[tool_executor_node] Error sending events batch via Socket.IO: {e}")
+            import traceback
+            traceback.print_exc()
     elif DEBUG_MODE:
         print(f"[tool_executor_node] NO WRITER AVAILABLE! Cannot stream {len(unique_events)} events to frontend!")
 
@@ -1052,17 +1150,23 @@ async def responder_node(
     writer: Optional[StreamWriter] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> ModelState:
-    """Generate the final assistant message after all tools have run.
-    
-    This node handles the final response generation, ensuring that the conversation
-    properly progresses even if there have been issues with tool execution.
-    """
+    """Generate the final assistant message after all tools have run."""
     new_state: ModelState = copy.deepcopy(state)
     
-    # Try to get writer from context if not directly provided
+    # Check if this is a token-only stream
+    token_only = new_state.get("_token_only_stream", False)
+    
+    # Get writer from context or registry
     if writer is None and context and "writer" in context:
         writer = context["writer"]
-        print(f"[responder_node] Got writer from context!")
+    
+    if writer is None and "thread_id" in new_state:
+        writer = get_writer(new_state["thread_id"])
+        if writer:
+            print(f"[responder_node] Retrieved writer from registry for thread {new_state['thread_id']}")
+    
+    # Get thread_id for Socket.IO fallback if needed
+    thread_id = new_state.get("thread_id")
     
     # Check iteration count to prevent infinite loops
     iteration_count = new_state.get("_planner_iterations", 0)
@@ -1138,20 +1242,74 @@ async def responder_node(
 
     # Create full prompt chain with conversation history
     prompt_chain = [system_prompt] + conversation_messages
-
+    
+    final_text = ""
+    
+    # Try to stream using the writer
     if writer:
-        # Stream the LLM response token-by-token.
-        async for chunk in _llm_streaming.astream(prompt_chain):
-            token = chunk.content if hasattr(chunk, "content") else chunk
-            await writer({"type": "response", "content": token})
-        final_text = ""  # nothing further; writer already streamed.
+        print(f"[responder_node] Streaming response using registered writer")
+        try:
+            # Stream the LLM response token-by-token.
+            async for chunk in _llm_streaming.astream(prompt_chain):
+                token = chunk.content if hasattr(chunk, "content") else chunk
+                if token:  # Ensure we only emit real tokens
+                    print(f"[responder_node] Streaming token: {token}")
+                    await writer({"type": "response", "content": token})
+                    final_text += token
+            
+            print(f"[responder_node] Finished streaming. Total response length: {len(final_text)}")
+        except Exception as e:
+            print(f"[responder_node] Error during streaming: {e}")
+            # Fall back to non-streaming if there was an error
+            resp = await _llm_streaming.ainvoke(prompt_chain)
+            final_text = resp.content
+            print(f"[responder_node] Used fallback non-streaming. Response length: {len(final_text)}")
+    
+    # No writer available, use non-streaming
     else:
-        resp = await _llm_streaming.ainvoke(prompt_chain)
-        final_text = resp.content
+        print(f"[responder_node] No writer available, using non-streaming LLM call")
+        
+        # For token-only streams, try Socket.IO as a fallback
+        if token_only and thread_id:
+            try:
+                import sys
+                sys.path.append('/Users/wout_vp/Code/Fitness_agents')
+                from main import sio, thread_to_sid
+                
+                if thread_id in thread_to_sid:
+                    sid = thread_to_sid[thread_id]
+                    print(f"[responder_node] Using Socket.IO fallback for token streaming to sid {sid}")
+                    
+                    # Use streaming but emit via Socket.IO
+                    async for chunk in _llm_streaming.astream(prompt_chain):
+                        token = chunk.content if hasattr(chunk, "content") else chunk
+                        if token:
+                            import asyncio
+                            await sio.emit('model_token', {"content": token}, to=sid)
+                            final_text += token
+                            
+                    print(f"[responder_node] Finished Socket.IO token streaming. Length: {len(final_text)}")
+                else:
+                    # No Socket.IO session, fall back to normal call
+                    resp = await _llm_streaming.ainvoke(prompt_chain)
+                    final_text = resp.content
+            except Exception as e:
+                print(f"[responder_node] Socket.IO streaming error: {e}")
+                # Fall back to non-streaming
+                resp = await _llm_streaming.ainvoke(prompt_chain)
+                final_text = resp.content
+        else:
+            # Normal non-streaming call
+            resp = await _llm_streaming.ainvoke(prompt_chain)
+            final_text = resp.content
 
     # Append final assistant message to conversation history.
     messages = new_state.get("messages", []).copy()
-    messages.append({"role": "assistant", "content": final_text})
+    messages.append({
+        "role": "assistant", 
+        "content": final_text,
+        "timestamp": datetime.now().isoformat()  # Add timestamp to assistant message
+    })
     new_state["messages"] = messages
 
     # Clean up internal fields
@@ -1165,7 +1323,7 @@ async def responder_node(
     new_state["_just_executed_muscle_tools"] = False
     new_state["_tool_executions"] = 0
 
-    return new_state 
+    return new_state
 
 async def muscle_control_agent(
     state: ModelState,
@@ -1252,6 +1410,54 @@ async def muscle_control_agent(
         print(f"[muscle_control_agent] Generated {len(pending_muscle_tool_calls)} muscle tool calls")
         for i, call in enumerate(pending_muscle_tool_calls):
             print(f"[muscle_control_agent] Tool {i+1}: {call.get('name')} - {call.get('args')}")
+            
+            # MODIFIED: Update highlighted_muscles state directly for the camera_control_agent
+            if call.get("name") == "select_muscles":
+                # Extract muscle names and colors from the tool call
+                muscle_names = call.get("args", {}).get("muscle_names", [])
+                colors_arg = call.get("args", {}).get("colors", {})
+                
+                # Process colors in the same way as tool_executor_node
+                muscle_color_map = {}
+                
+                if not colors_arg:
+                    # No colors provided, assign based on muscle groups
+                    print(f"[muscle_control_agent] No colors provided, assigning defaults to {len(muscle_names)} muscles")
+                    for name in muscle_names:
+                        muscle_color_map[name] = get_color_for_muscle(name)
+                elif isinstance(colors_arg, str):
+                    # String color applies to all muscles in this call
+                    print(f"[muscle_control_agent] Using string color '{colors_arg}' for all {len(muscle_names)} muscles")
+                    for name in muscle_names:
+                        muscle_color_map[name] = colors_arg
+                elif isinstance(colors_arg, dict):
+                    # Dictionary maps specific muscles to colors
+                    print(f"[muscle_control_agent] Using color dictionary with {len(colors_arg)} entries")
+                    for name in muscle_names:
+                        if name in colors_arg and colors_arg[name]:
+                            muscle_color_map[name] = colors_arg[name]
+                        else:
+                            # Muscle not in dict or has null color, assign based on group
+                            muscle_color_map[name] = get_color_for_muscle(name)
+                
+                # Update state directly so camera_control_agent can use it
+                new_state["highlighted_muscles"] = muscle_color_map
+                print(f"[muscle_control_agent] Updated highlighted_muscles state with {len(muscle_color_map)} muscles")
+            
+            elif call.get("name") == "toggle_muscle":
+                # Handle toggle_muscle tool calls
+                muscle_name = call.get("args", {}).get("muscle_name", "")
+                color = call.get("args", {}).get("color") or "#FFD700"  # Default gold color
+                
+                # Update state directly
+                current_muscles = new_state.get("highlighted_muscles", {}).copy()
+                if muscle_name in current_muscles:
+                    current_muscles.pop(muscle_name)
+                else:
+                    current_muscles[muscle_name] = color
+                
+                new_state["highlighted_muscles"] = current_muscles
+                print(f"[muscle_control_agent] Updated highlighted_muscles state after toggle")
     else:
         print(f"[muscle_control_agent] WARNING: No tool calls generated despite setting tool_choice='required'")
         print(f"[muscle_control_agent] LLM response content: {getattr(llm_response, 'content', '')}")
@@ -1286,7 +1492,7 @@ Use consistent coloring based on muscle groups:
             fallback_user = HumanMessage(content="Select the muscles that should be highlighted for this request.")
             
             # Call a structured LLM for the fallback
-            fallback_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+            fallback_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
             fallback_response = await fallback_llm.ainvoke([fallback_system, fallback_user])
             fallback_text = fallback_response.content
             
@@ -1321,8 +1527,10 @@ Use consistent coloring based on muscle groups:
                     
                     print(f"[muscle_control_agent] Created fallback muscle selection with {len(muscle_names)} muscles")
                     
-                    # Also apply directly to state for camera agent
-                    # new_state["highlighted_muscles"] = colors
+                    # MODIFIED: Also directly update state for camera agent
+                    if colors and muscle_names:
+                        new_state["highlighted_muscles"] = colors
+                        print(f"[muscle_control_agent] Updated highlighted_muscles with fallback data: {len(colors)} muscles")
                     
                 else:
                     print(f"[muscle_control_agent] Failed to extract muscle names from fallback JSON")
@@ -1354,6 +1562,11 @@ Use consistent coloring based on muscle groups:
     # This will be more reliable than checking for pending_muscle_tool_calls
     new_state["_just_executed_muscle_tools"] = True
     print(f"[muscle_control_agent] Setting _just_executed_muscle_tools = True")
+    
+    # MODIFIED: Since we're now going directly to camera_control, we should NOT set _route
+    # Remove the _route field to ensure proper flow
+    if "_route" in new_state:
+        del new_state["_route"]
     
     return new_state
 
@@ -1390,6 +1603,11 @@ async def camera_control_agent(
         if highlighted_muscles
         else "None"
     )
+    
+    # MODIFIED: Add additional detailed logging for debugging the muscle state passing
+    print(f"[camera_control_agent] Received highlighted_muscles with {len(highlighted_muscles)} muscles")
+    if highlighted_muscles:
+        print(f"[camera_control_agent] First few muscles: {list(highlighted_muscles.keys())[:3]}")
     
     camera = new_state.get("camera", {"position": {}, "target": {}})
     camera_str = f"Position: {camera.get('position', {})}, Target: {camera.get('target', {})}"
@@ -1503,9 +1721,24 @@ Camera: {camera_str}
     assistant_draft += "\n\nI'm adjusting the camera to give you the best view of the highlighted muscles."
     new_state["assistant_draft"] = assistant_draft
         
-    # REMOVE all the direct tool execution code and just store the tool calls
+    # Store the tool calls in state
     new_state["pending_camera_tool_calls"] = pending_camera_tool_calls
     
-    # Don't clear the _route_camera flag here - let execute_tools handle that
-
+    # MODIFIED: We now always go to execute_tools, so we need to ensure it has the correct tools
+    # If we have both muscle and camera tools, merge them for execute_tools
+    pending_muscle_tool_calls = new_state.get("pending_muscle_tool_calls", [])
+    if pending_muscle_tool_calls:
+        # Combine tool calls from both agents - always process muscle tools first
+        combined_tools = pending_muscle_tool_calls + pending_camera_tool_calls
+        new_state["pending_tool_calls"] = combined_tools
+        print(f"[camera_control_agent] Combined {len(pending_muscle_tool_calls)} muscle tools with {len(pending_camera_tool_calls)} camera tools")
+    else:
+        # Just use camera tools
+        new_state["pending_tool_calls"] = pending_camera_tool_calls
+        print(f"[camera_control_agent] Using only {len(pending_camera_tool_calls)} camera tools")
+    
+    # MODIFIED: Clear the routing flags to ensure normal flow (just in case)
+    if "_route" in new_state:
+        del new_state["_route"]
+    
     return new_state

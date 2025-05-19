@@ -29,6 +29,7 @@ from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
 # Import get_vectorstore from ingestion
 from ingestion import get_vectorstore
+from langgraph.checkpoint.memory import MemorySaver
 
 # Add 3D model API imports
 from graph.model_graph import model_graph
@@ -51,6 +52,33 @@ api.add_middleware(
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 # Wrap FastAPI app with Socket.IO ASGI app
 app = socketio.ASGIApp(sio, api)
+
+memory_saver = MemorySaver()
+
+# Dictionary to track Socket.IO sessions by thread_id
+thread_to_sid = {}
+
+# Helper function to extract final state from LangGraph results
+def _extract_final_state(state_result, thread_id, user_id, messages):
+    """Extract the final state from LangGraph state result, with fallback handling."""
+    # Extract state from tuple if needed
+    final_state = None
+    if isinstance(state_result, tuple):
+        for item in state_result:
+            if isinstance(item, dict) and "thread_id" in item:
+                final_state = item
+                break
+    else:
+        final_state = state_result
+    
+    # Handle case where state extraction fails
+    if not final_state or not isinstance(final_state, dict) or "thread_id" not in final_state:
+        print(f"WARNING: Invalid state result type: {type(state_result)}")
+        # Use initial state as fallback
+        final_state = model_graph.get_or_create_state(thread_id, user_id)
+        final_state["messages"] = messages
+    
+    return final_state
 
 # --- Socket.IO Event Handlers ---
 @sio.event
@@ -83,146 +111,228 @@ async def handle_model_message(sid, data):
             await sio.emit('model_response', {"error": "Missing 'message' in data."}, to=sid)
             return
 
-        # Set of event hashes to avoid duplicates
-        sent_event_hashes = set()
+        # Get or create state
+        state = model_graph.get_or_create_state(thread_id, user_id)
         
-        # Define a streaming handler for tokens
-        async def stream_handler(stream_mode, chunk):
-            if chunk is None:
-                print("Stream handler received None chunk, skipping")
-                return
+        # Update thread_id and user_id from state for consistency
+        thread_id = state["thread_id"]
+        user_id = state["user_id"]
+        
+        # Store the Socket.IO session ID with the thread for future use
+        thread_to_sid[thread_id] = sid
+        print(f"Registered Socket.IO session {sid} for thread {thread_id}")
+        print(f"Active thread_to_sid mappings: {list(thread_to_sid.keys())}")
+        
+        # Copy message history and add new message
+        messages = state.get("messages", []).copy()
+        messages.append({
+            "role": "user", 
+            "content": message,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Create input state with the new message
+        input_state = state.copy()
+        input_state["messages"] = messages
+        
+        # Configure checkpoint
+        config = {
+            "configurable": {
+                "thread_id": state["thread_id"]
+            }
+        }
+        
+        # Define a writer function for streaming
+        async def socket_io_writer(chunk):
+            if isinstance(chunk, dict) and "type" in chunk and "content" in chunk:
+                chunk_type = chunk["type"]
                 
-            # Handle different types of stream content
-            if stream_mode == "custom":
-                # Thinking or planning
-                if chunk.get("type") == "thinking":
+                if chunk_type == "response":
+                    content = chunk["content"]
+                    if content:  # Only emit non-empty tokens
+                        await sio.emit('model_response', {
+                            "response": content,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "stream": True
+                        }, to=sid)
+                        print(f"EMITTED RESPONSE TOKEN: '{content}'")
+                
+                elif chunk_type == "thinking":
                     await sio.emit('model_thinking', {"content": chunk["content"]}, to=sid)
                     print(f"EMITTED THINKING: {chunk['content']}")
-                    
-                # Response tokens - text emitted to user
-                elif chunk.get("type") == "response":
-                    await sio.emit('model_response', {
-                        "response": chunk["content"],  # This is a single token or chunk
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "stream": True
-                    }, to=sid)
-                    print(f"EMITTED RESPONSE TOKEN: {chunk['content']}")
-                    
-                # Events for 3D model updates
-                elif chunk.get("type") == "event":
-                    event = chunk.get("content")
-                    if not event:
-                        print("Received empty event content, skipping")
-                        return
-                    
-                    # Debug log
-                    print(f"SOCKET.IO - PROCESSING EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
-                    
-                    # Create a stable hash for deduplication
-                    event_hash = f"{event.get('type', 'unknown')}:{json.dumps(event.get('payload', {}))}"
-                    if event_hash not in sent_event_hashes:
-                        sent_event_hashes.add(event_hash)
-                        # Emit directly with event type as the event name
-                        await sio.emit(event["type"], event["payload"], to=sid)
-                        print(f"SOCKET.IO - EMITTED EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
-                        
-                        # Add extra debugging for muscle selection events
-                        if event["type"] == "model:selectMuscles":
-                            muscle_names = event["payload"].get("muscleNames", [])
-                            muscle_colors = event["payload"].get("colors", {})
-                            print(f"SOCKET.IO - MUSCLE SELECTION EVENT: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
-                            print(f"SOCKET.IO - MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
-                            print(f"SOCKET.IO - MUSCLE COLORS SAMPLE: {dict(list(muscle_colors.items())[:3])}")
-                    else:
-                        print(f"SOCKET.IO - SKIPPED DUPLICATE EVENT: {event['type']}")
-                        
-            elif stream_mode == "updates":
-                # Stream model events as they happen
-                for node_name, node_data in chunk.items():
-                    # Check for events in the node data
-                    events = node_data.get("events", [])
-                    if not events:
-                        continue
-                    
-                    print(f"SOCKET.IO - PROCESSING {len(events)} EVENTS FROM {node_name}")
-                        
-                    for event in events:
-                        # Validate event structure
-                        if not isinstance(event, dict) or "type" not in event or "payload" not in event:
-                            print(f"SOCKET.IO - Skipping invalid event: {event}")
-                            continue
-                        
-                        # Debug log
-                        print(f"SOCKET.IO - PROCESSING UPDATE EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
-                            
-                        # Create a unique hash to avoid duplicates
-                        event_hash = f"{event['type']}:{json.dumps(event['payload'])}"
-                        if event_hash not in sent_event_hashes:
-                            sent_event_hashes.add(event_hash)
-                            # Emit the event directly to frontend with the event type as the event name
-                            await sio.emit(event["type"], event["payload"], to=sid)
-                            print(f"SOCKET.IO - EMITTED UPDATE EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
-                            
-                            # Add extra debugging for muscle selection events
-                            if event["type"] == "model:selectMuscles":
-                                muscle_names = event["payload"].get("muscleNames", [])
-                                muscle_colors = event["payload"].get("colors", {})
-                                print(f"SOCKET.IO - UPDATE MUSCLE SELECTION: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
-                                print(f"SOCKET.IO - UPDATE MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
-                                print(f"SOCKET.IO - UPDATE MUSCLE COLORS: {dict(list(muscle_colors.items())[:3])}")
-                        else:
-                            print(f"SOCKET.IO - SKIPPED DUPLICATE UPDATE EVENT: {event['type']}")
-
-        # Call the model graph with streaming
-        result = await model_graph.process_message(
-            message=message,
-            thread_id=thread_id,
-            user_id=user_id,
-            stream_handler=stream_handler
-        )
-
-        # Check if any events weren't sent during streaming
-        for event in result.get("events", []):
-            if not isinstance(event, dict) or "type" not in event or "payload" not in event:
-                print(f"SOCKET.IO - Skipping invalid final event: {event}")
-                continue
                 
-            event_hash = f"{event['type']}:{json.dumps(event['payload'])}"
-            if event_hash not in sent_event_hashes:
-                # Debug the event being emitted
-                print(f"SOCKET.IO - EMITTING FINAL EVENT: {event['type']} - {json.dumps(event.get('payload', {}))[:100]}")
+                elif chunk_type == "event":
+                    # Emit events immediately
+                    await sio.emit('model_event', chunk["content"], to=sid)
+                    print(f"EMITTED EVENT: {chunk['content']['type']}")
+        
+        # Register the writer with the global registry for graph nodes to use
+        from graph.nodes.model_graph_nodes import register_writer, clear_writer
+        register_writer(thread_id, socket_io_writer)
+        print(f"Registered writer for thread {thread_id}")
+        
+        # Send an initial thinking message
+        await sio.emit('model_thinking', {"content": "Analyzing your question..."}, to=sid)
+        
+        # Track events to send at the end
+        pending_events = []
+        
+        # Process using LangGraph's native streaming
+        print(f"[Socket.IO] Starting LangGraph stream")
+        token_buffer = ""  # Buffer to collect tokens
+        
+        try:
+            async for chunk_type, chunk in model_graph.graph.astream(
+                input_state,
+                stream_mode=["custom", "updates"],
+                config=config
+            ):
+                if chunk_type == "custom" and isinstance(chunk, dict):
+                    if chunk.get("type") == "response":
+                        token = chunk.get("content", "")
+                        if token:
+                            token_buffer += token
+                            await sio.emit('model_response', {
+                                "response": token,
+                                "thread_id": thread_id,
+                                "user_id": user_id,
+                                "stream": True
+                            }, to=sid)
+                            print(f"EMITTED RESPONSE TOKEN: '{token}'")
+                    
+                    elif chunk.get("type") == "thinking":
+                        await sio.emit('model_thinking', {"content": chunk["content"]}, to=sid)
+                        print(f"EMITTED THINKING: {chunk['content']}")
+                    
+                    elif chunk.get("type") == "event":
+                        # Emit events immediately as well as collect them
+                        await sio.emit('model_event', chunk["content"], to=sid)
+                        print(f"EMITTED EVENT: {chunk['content']['type']}")
+                        pending_events.append(chunk["content"])
                 
-                # Directly emit the event with its type as the event name
-                await sio.emit(event["type"], event["payload"], to=sid)
-                print(f"SOCKET.IO - EMITTED FINAL EVENT: {event['type']} WITH EMIT TYPE: {event['type']}")
+                elif chunk_type == "updates" and isinstance(chunk, dict):
+                    # Check for events field in updates
+                    if "events" in chunk and isinstance(chunk["events"], list):
+                        for event in chunk["events"]:
+                            if isinstance(event, dict) and "type" in event:
+                                await sio.emit('model_event', event, to=sid)
+                                print(f"EMITTED EVENT FROM UPDATES: {event['type']}")
+                                pending_events.append(event)
+        except Exception as e:
+            print(f"Error during LangGraph streaming: {e}")
+            import traceback
+            traceback.print_exc()
+            # Send error notification
+            await sio.emit('model_error', {"error": str(e)}, to=sid)
+        finally:
+            # Always clean up the writer
+            clear_writer(thread_id)
+            print(f"Cleaned writer for thread {thread_id}")
+        
+        # Get final state
+        state_result = await model_graph.graph.aget_state(config=config)
+        
+        # Extract state from tuple if needed
+        final_state = None
+        if isinstance(state_result, tuple):
+            for item in state_result:
+                if isinstance(item, dict) and "thread_id" in item:
+                    final_state = item
+                    break
+        else:
+            final_state = state_result
+        
+        # Handle case where state extraction fails
+        if not final_state or not isinstance(final_state, dict) or "thread_id" not in final_state:
+            print(f"WARNING: Invalid state result type: {type(state_result)}")
+            # Use our initial state as fallback
+            final_state = model_graph.get_or_create_state(thread_id, user_id)
+            final_state["messages"] = messages
+        
+        # Update the model's active sessions with the final state
+        model_graph.active_sessions[final_state["thread_id"]] = final_state
+        
+        # Save to memory saver
+        try:
+            import time
+            memory_saver.put(
+                final_state["thread_id"],
+                {"state": final_state},
+                {},
+                [f"{final_state['thread_id']}_v{int(time.time())}"]
+            )
+            print(f"Persisted state to memory_saver")
+        except Exception as e:
+            print(f"Error persisting to memory_saver: {e}")
+        
+        # Extract the complete assistant response if available
+        latest_messages = final_state.get("messages", [])
+        final_content = ""
+        for msg in reversed(latest_messages):
+            if msg.get("role") == "assistant":
+                final_content = msg.get("content", "")
+                break
                 
-                # Special debug for muscle selection
-                if event["type"] == "model:selectMuscles":
-                    muscle_names = event["payload"].get("muscleNames", [])
-                    muscle_colors = event["payload"].get("colors", {})
-                    print(f"SOCKET.IO - FINAL MUSCLE SELECTION: {len(muscle_names)} muscles with {len(muscle_colors)} colors")
-                    print(f"SOCKET.IO - FINAL MUSCLE NAMES: {muscle_names[:5]}{'...' if len(muscle_names) > 5 else ''}")
-                    print(f"SOCKET.IO - FINAL MUSCLE COLORS: {dict(list(muscle_colors.items())[:3])}")
-                
-                sent_event_hashes.add(event_hash)  # Add to set after sending
-            else:
-                print(f"SOCKET.IO - SKIPPED DUPLICATE FINAL EVENT: {event['type']}")
-                
-        # Final response message to complete the conversation
+        # If we didn't get a final response from the messages but have a token buffer,
+        # use that instead
+        if not final_content and token_buffer:
+            final_content = token_buffer
+            print(f"Using token buffer for final content. Length: {len(token_buffer)}")
+            
+        # Send completion signal with final content
         await sio.emit('model_response', {
-            "response": result["response"],
-            "thread_id": result["thread_id"],
-            "user_id": result["user_id"],
+            "response": final_content,
+            "thread_id": final_state["thread_id"],
+            "user_id": final_state["user_id"],
             "done": True
         }, to=sid)
         
-        print(f"Socket.IO message complete. Final events count: {len(result.get('events', []))}, Sent events: {len(sent_event_hashes)}")
+        print(f"Sent completion with content length: {len(final_content)}")
+        
+        # Send events summary if collected any
+        if pending_events:
+            await sio.emit('model_events_summary', {"count": len(pending_events)}, to=sid)
+            print(f"EMITTED EVENTS SUMMARY: {len(pending_events)} events")
         
     except Exception as e:
         logging.error(f"Socket.IO model_message error: {e}")
-        traceback.print_exc()  # Print the full stack trace for debugging
+        traceback.print_exc()
         await sio.emit('model_response', {"error": str(e)}, to=sid)
+
+@sio.on('model_start')
+async def handle_model_start(sid, data):
+    """
+    Notify the server that a message is coming, but response will be streamed via HTTP.
+    This is used ONLY for bi-directional events related to the model, not for token streaming.
+    """
+    message = data.get("message")
+    thread_id = data.get("thread_id")
+    user_id = data.get("user_id")
+    
+    # Always ensure the thread_id is valid
+    if not thread_id:
+        thread_id = str(uuid.uuid4())
+        print(f"Generated new thread_id: {thread_id}")
+    
+    # Store the Socket.IO session ID with the thread 
+    thread_to_sid[thread_id] = sid
+    print(f"Registered Socket.IO session {sid} for thread {thread_id}")
+    print(f"Active thread_to_sid mappings: {list(thread_to_sid.keys())}")
+    
+    print(f"Model start notification received via Socket.IO, response will stream via HTTP")
+    print(f"SID: {sid}, Thread: {thread_id}, User: {user_id}")
+    
+    # No processing happens here - the HTTP stream endpoint will handle that
+    await sio.emit('model_started', {
+        "thread_id": thread_id,
+        "status": "streaming"
+    }, to=sid)
+    
+    # Also send a confirmation that we're ready to receive events
+    await sio.emit('model_ready_for_events', {
+        "thread_id": thread_id,
+    }, to=sid)
 
 # Initialize RAG system
 def init_rag_system():
@@ -241,7 +351,7 @@ def init_rag_system():
         )
         
         # Create the QA chain
-        llm = ChatOpenAI(temperature=0, model="gpt-4")
+        llm = ChatOpenAI(temperature=0, model="gpt-4o-mini", streaming=True)
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",  # Stuff documents into a single prompt
@@ -842,49 +952,49 @@ async def process_fitness_query(query: FitnessQueryRequest):
         logging.error(f"Query: {query.query}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api.get("/fitness/session/{thread_id}")
-async def get_session_state(thread_id: str):
-    """Get the current state of a fitness coaching session"""
-    try:
-        if thread_id not in active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        state = active_sessions[thread_id]
-        
-        # Get the image timestamps from structured profile if available
-        image_timestamps = {}
-        if "structured_user_profile" in state and isinstance(state["structured_user_profile"], dict):
-            image_timestamps = state["structured_user_profile"].get("image_timestamps", {})
-        
-        return {
-            "user_id": state.get("user_id"),
-            "thread_id": thread_id,
-            "user_profile": state["user_profile"],
-            "dietary_state": {
-                "content": state["dietary_state"].content,
-                "last_update": state["dietary_state"].last_update,
-                "is_streaming": state["dietary_state"].is_streaming
-            },
-            "fitness_state": {
-                "content": state["fitness_state"].content,
-                "last_update": state["fitness_state"].last_update,
-                "is_streaming": state["fitness_state"].is_streaming
-            },
-            "conversation_history": state["conversation_history"][-10:],  # Last 10 messages
-            "query_analysis": state.get("query_analysis", {}),  # Include the query analysis
-            "rag_context_count": len(state.get("rag_context", [])) if "rag_context" in state else 0,
-            "body_analysis": state.get("body_analysis", None),  # Include body analysis if available
-            "image_timestamps": image_timestamps,
-            "progress_comparison": state.get("progress_comparison", None),  # Include progress comparison if available
-            "has_previous_data": "previous_complete_response" in state  # Indicate if there's previous data
-        }
-    
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logging.error(f"Error retrieving session state for thread {thread_id}: {str(e)}")
-        logging.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @api.get("/fitness/session/{thread_id}")
+# async def get_session_state(thread_id: str):
+#     """Get the current state of a fitness coaching session"""
+#     try:
+#         if thread_id not in active_sessions:
+#             raise HTTPException(status_code=404, detail="Session not found")
+#         
+#         state = active_sessions[thread_id]
+#         
+#         # Get the image timestamps from structured profile if available
+#         image_timestamps = {}
+#         if "structured_user_profile" in state and isinstance(state["structured_user_profile"], dict):
+#             image_timestamps = state["structured_user_profile"].get("image_timestamps", {})
+#         
+#         return {
+#             "user_id": state.get("user_id"),
+#             "thread_id": thread_id,
+#             "user_profile": state["user_profile"],
+#             "dietary_state": {
+#                 "content": state["dietary_state"].content,
+#                 "last_update": state["dietary_state"].last_update,
+#                 "is_streaming": state["dietary_state"].is_streaming
+#             },
+#             "fitness_state": {
+#                 "content": state["fitness_state"].content,
+#                 "last_update": state["fitness_state"].last_update,
+#                 "is_streaming": state["fitness_state"].is_streaming
+#             },
+#             "conversation_history": state["conversation_history"][-10:],  # Last 10 messages
+#             "query_analysis": state.get("query_analysis", {}),  # Include the query analysis
+#             "rag_context_count": len(state.get("rag_context", [])) if "rag_context" in state else 0,
+#             "body_analysis": state.get("body_analysis", None),  # Include body analysis if available
+#             "image_timestamps": image_timestamps,
+#             "progress_comparison": state.get("progress_comparison", None),  # Include progress comparison if available
+#             "has_previous_data": "previous_complete_response" in state  # Indicate if there's previous data
+#         }
+#     
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         logging.error(f"Error retrieving session state for thread {thread_id}: {str(e)}")
+#         logging.error(f"Traceback: {traceback.format_exc()}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 # 3D Model API Endpoints
 @api.post("/model/chat", response_model=ModelChatResponse)
@@ -912,72 +1022,268 @@ async def model_chat_stream(request: ModelChatRequest):
     """Handle a 3D model chat request with streaming response."""
     
     async def stream_response():
-        # Track sent events to avoid duplicates
-        sent_event_hashes = set()
-        thread_id = request.thread_id
-        user_id = request.user_id
+        # Get or create state for this session
+        state = model_graph.get_or_create_state(request.thread_id, request.user_id)
+        thread_id = state["thread_id"]
         
-        # Handler for streaming updates
-        def stream_handler(stream_mode, chunk):
-            nonlocal sent_event_hashes, thread_id, user_id
-            if chunk is None:
-                return None
-            # Stream LLM tokens as 'response' events
-            if chunk.get("type") == "response":
-                content = json.dumps({"type": "response", "content": chunk["content"]})
-                return f"data: {content}\n\n"
-            if stream_mode == "custom":
-                # Handle custom streaming events (thinking, routing)
-                if "type" in chunk and chunk["type"] in ["thinking", "routing"]:
-                    content = json.dumps({"type": "thinking", "content": chunk["content"]})
-                    return f"data: {content}\n\n"
-            elif stream_mode == "updates":
-                # Handle state updates (events, agent responses)
-                for node_name, update in chunk.items():
-                    if "events" in update:
-                        for event in update["events"]:
-                            event_hash = hash(f"{event['type']}:{json.dumps(event['payload'])}")
-                            if event_hash not in sent_event_hashes:
-                                sent_event_hashes.add(event_hash)
-                                content = json.dumps({"type": "event", "content": event})
-                                return f"data: {content}\n\n"
-            return None
+        # Add the new message to the messages history
+        messages = state.get("messages", []).copy()
+        messages.append({
+            "role": "user", 
+            "content": request.message, 
+            "timestamp": datetime.now().isoformat()
+        })
         
+        # Create input state with the new message
+        input_state = state.copy()
+        input_state["messages"] = messages
+        
+        # Configure checkpoint
+        config = {
+            "configurable": {
+                "thread_id": state["thread_id"]
+            }
+        }
+        
+        # Define a writer function for streaming
+        async def http_writer(chunk):
+            if isinstance(chunk, dict) and "type" in chunk and "content" in chunk:
+                chunk_type = chunk["type"]
+                
+                if chunk_type == "response":
+                    yield f"data: {json.dumps({'type':'response','content':chunk['content']})}\n\n"
+                
+                elif chunk_type == "thinking":
+                    yield f"data: {json.dumps({'type':'thinking','content':chunk['content']})}\n\n"
+                
+                elif chunk_type == "event":
+                    yield f"data: {json.dumps({'type':'event','content':chunk['content']})}\n\n"
+        
+        # Register the writer with the global registry
+        from graph.nodes.model_graph_nodes import register_writer, clear_writer
+        # For HTTP streaming, we need a different approach since we can't have a coroutine that both
+        # yields and awaits. Instead, we'll use a flag in state to indicate streaming is happening
+        state["_is_http_streaming"] = True
+        
+        # Collect events for sending at the end
+        pending_events = []
+        
+        # Stream directly from LangGraph
+        print(f"[HTTP Stream] Starting LangGraph stream")
+        async for chunk_type, chunk in model_graph.graph.astream(
+            input_state,
+            stream_mode=["custom", "updates"],
+            config=config
+        ):
+            if chunk_type == "custom" and isinstance(chunk, dict):
+                if chunk.get("type") == "response":
+                    # Stream response tokens immediately
+                    yield f"data: {json.dumps({'type':'response','content':chunk['content']})}\n\n"
+                
+                elif chunk.get("type") == "thinking":
+                    # Stream thinking updates
+                    yield f"data: {json.dumps({'type':'thinking','content':chunk['content']})}\n\n"
+                
+                elif chunk.get("type") == "event":
+                    # Add to pending events and also stream individually if needed
+                    pending_events.append(chunk["content"])
+                    # For HTTP streaming, some clients prefer batched events
+                    # but we can also stream them individually
+                    yield f"data: {json.dumps({'type':'event','content':chunk['content']})}\n\n"
+            
+            elif chunk_type == "updates" and isinstance(chunk, dict):
+                # Check for events field in updates
+                if "events" in chunk and isinstance(chunk["events"], list):
+                    for event in chunk["events"]:
+                        if isinstance(event, dict) and "type" in event:
+                            pending_events.append(event)
+                            yield f"data: {json.dumps({'type':'event','content':event})}\n\n"
+        
+        # Clean up streaming flag
+        state.pop("_is_http_streaming", None)
+        
+        # Get final state
+        state_result = await model_graph.graph.aget_state(config=config)
+        
+        # Extract state from tuple if needed
+        final_state = None
+        if isinstance(state_result, tuple):
+            for item in state_result:
+                if isinstance(item, dict) and "thread_id" in item:
+                    final_state = item
+                    break
+        else:
+            final_state = state_result
+        
+        # Handle case where state extraction fails
+        if not final_state or not isinstance(final_state, dict) or "thread_id" not in final_state:
+            print(f"WARNING: Invalid state result type: {type(state_result)}")
+            # Use our initial state as fallback
+            final_state = model_graph.get_or_create_state(request.thread_id, request.user_id)
+            final_state["messages"] = messages
+        
+        # Update the model's active sessions with the final state
+        model_graph.active_sessions[final_state["thread_id"]] = final_state
+        
+        # Save to memory saver
         try:
-            # Process the message with streaming
-            result = await model_graph.process_message(
-                message=request.message,
-                thread_id=request.thread_id,
-                user_id=request.user_id,
-                stream_handler=stream_handler
+            import time
+            memory_saver.put(
+                final_state["thread_id"],
+                {"state": final_state},
+                {},
+                [f"{final_state['thread_id']}_v{int(time.time())}"]
             )
-            
-            # Get final thread_id and user_id
-            thread_id = result["thread_id"]
-            user_id = result["user_id"]
-            
-            # Send thread_id and user_id as metadata
-            metadata = json.dumps({
-                "type": "metadata", 
-                "content": {
-                    "thread_id": thread_id,
-                    "user_id": user_id
-                }
-            })
-            yield f"data: {metadata}\n\n"
-            
-            # Indicate completion
-            yield f"data: [DONE]\n\n"
+            print(f"HTTP: Persisted state to memory_saver")
         except Exception as e:
-            logging.error(f"Error in model chat streaming: {str(e)}")
-            logging.error(traceback.format_exc())
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-            yield f"data: [DONE]\n\n"
+            print(f"HTTP: Error persisting to memory_saver: {e}")
+        
+        # Send events summary if we collected any
+        if pending_events:
+            yield f"data: {json.dumps({'type':'events_summary','content':{'count':len(pending_events)}})}\n\n"
+        
+        # Send metadata
+        yield f"data: {json.dumps({'type':'metadata','content':{'thread_id':final_state['thread_id'],'user_id':final_state['user_id']}})}\n\n"
+        
+        # Mark stream as complete
+        yield "data: [DONE]\n\n"
     
     return StreamingResponse(
         stream_response(),
-        media_type="text/event-stream",
+        media_type="text/event-stream"
     )
+
+
+@api.get("/model/token-stream")
+async def model_token_stream(
+    message: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None
+):
+    """Stream ONLY the LLM tokens to the client using HTTP streaming."""
+    
+    async def stream_tokens():
+        # Get or create state - Don't use nonlocal as these are function parameters
+        state = model_graph.get_or_create_state(thread_id, user_id)
+        # Update variables from state so we send back correct IDs
+        thread_id_to_use = state["thread_id"]
+        user_id_to_use = state["user_id"]
+        
+        # Send response metadata first
+        yield f"event: metadata\ndata: {json.dumps({'thread_id': thread_id_to_use, 'user_id': user_id_to_use})}\n\n"
+        
+        # CRITICAL: Add Socket.IO session tracking for events
+        if thread_id_to_use in thread_to_sid:
+            sid = thread_to_sid[thread_id_to_use]
+            print(f"Found Socket.IO session {sid} for thread {thread_id_to_use}")
+            
+            # Register a Socket.IO writer for events
+            async def socket_io_writer(chunk):
+                if isinstance(chunk, dict) and "type" in chunk:
+                    chunk_type = chunk["type"]
+                    
+                    if chunk_type == "event":
+                        # Send events via Socket.IO
+                        await sio.emit('model_event', chunk["content"], to=sid)
+                        print(f"Emitted event via Socket.IO: {chunk['content']['type']}")
+                    elif chunk_type == "thinking":
+                        await sio.emit('model_thinking', {"content": chunk["content"]}, to=sid)
+                        print(f"Emitted thinking via Socket.IO: {chunk['content']}")
+            
+            # Register this writer
+            from graph.nodes.model_graph_nodes import register_writer
+            register_writer(thread_id_to_use, socket_io_writer)
+            print(f"Registered Socket.IO writer for thread {thread_id_to_use}")
+        
+        # Add the new message to state
+        messages = state.get("messages", []).copy()
+        messages.append({
+            "role": "user", 
+            "content": message,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Create input state with the new message
+        input_state = state.copy()
+        input_state["messages"] = messages
+        
+        # Configure checkpoint
+        config = {
+            "configurable": {
+                "thread_id": thread_id_to_use
+            }
+        }
+        
+        # Flag this as a token-only stream so nodes know not to send events here
+        input_state["_token_only_stream"] = True
+        
+        # Send a thinking event
+        yield f"event: thinking\ndata: {json.dumps({'content': 'Analyzing your question...'})}\n\n"
+        
+        # Stream from LangGraph
+        async for chunk_type, chunk in model_graph.graph.astream(
+            input_state,
+            stream_mode=["custom", "updates"],  # Add updates to get events too
+            config=config
+        ):
+            if chunk_type == "custom" and isinstance(chunk, dict):
+                if chunk.get("type") == "response":
+                    # Make sure chunk is not None or empty
+                    content = chunk.get("content", "")
+                    if content:
+                        # Debug output
+                        print(f"Streaming token: '{content}'")
+                        # Ensure proper SSE format
+                        yield f"event: token\ndata: {json.dumps({'content': content})}\n\n"
+                        
+                elif chunk.get("type") == "thinking":
+                    # Stream thinking updates too
+                    yield f"event: thinking\ndata: {json.dumps({'content': chunk.get('content', '')})}\n\n"
+                    
+                elif chunk.get("type") == "event":
+                    # Also stream event info to HTTP client (in addition to Socket.IO)
+                    yield f"event: event\ndata: {json.dumps({'content': chunk.get('content', {})})}\n\n"
+                    
+            # Process updates (events) to ensure they're captured by the Socket.IO writer
+            elif chunk_type == "updates" and isinstance(chunk, dict) and "events" in chunk:
+                # Also stream events summary to HTTP client
+                events = chunk.get("events", [])
+                if events:
+                    yield f"event: events_batch\ndata: {json.dumps({'count': len(events)})}\n\n"
+        
+        # Get final state and update in memory
+        state_result = await model_graph.graph.aget_state(config=config)
+        
+        # Extract and store final state
+        final_state = _extract_final_state(state_result, thread_id_to_use, user_id_to_use, messages)
+        model_graph.active_sessions[final_state["thread_id"]] = final_state
+        
+        # Clean up the writer
+        from graph.nodes.model_graph_nodes import clear_writer
+        clear_writer(thread_id_to_use)
+        print(f"Cleared Socket.IO writer for thread {thread_id_to_use}")
+        
+        # Send completion message with the full final response
+        latest_messages = final_state.get("messages", [])
+        final_response = ""
+        if latest_messages and latest_messages[-1]["role"] == "assistant":
+            final_response = latest_messages[-1].get("content", "")
+        
+        yield f"event: complete\ndata: {json.dumps({'content': final_response})}\n\n"
+        
+        # Signal completion with done event
+        yield "event: done\ndata: {}\n\n"
+    
+    return StreamingResponse(
+        stream_tokens(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
 
 @api.websocket("/model/ws")
 async def model_websocket_endpoint(websocket: WebSocket):
@@ -994,57 +1300,162 @@ async def model_websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": "Message field is required"})
                 continue
             
-            # Track sent events to avoid duplicates
-            sent_event_hashes = set()
+            # Get or create state for this session
+            state = model_graph.get_or_create_state(
+                message_data.get("thread_id"), 
+                message_data.get("user_id")
+            )
+            thread_id = state["thread_id"]
             
-            # Handler for streaming updates
-            async def ws_stream_handler(stream_mode, chunk):
-                if stream_mode == "custom":
-                    # Handle custom streaming events (thinking, routing)
-                    if "type" in chunk and chunk["type"] in ["thinking", "routing"]:
+            # Define a writer function for the WebSocket
+            async def websocket_writer(chunk):
+                if isinstance(chunk, dict) and "type" in chunk and "content" in chunk:
+                    chunk_type = chunk["type"]
+                    
+                    if chunk_type == "response":
+                        await websocket.send_json({
+                            "type": "response",
+                            "content": chunk["content"]
+                        })
+                        print(f"WS: EMITTED RESPONSE TOKEN")
+                    
+                    elif chunk_type == "thinking":
                         await websocket.send_json({
                             "type": "thinking",
                             "content": chunk["content"]
                         })
+                        print(f"WS: EMITTED THINKING")
+                    
+                    elif chunk_type == "event":
+                        await websocket.send_json({
+                            "type": "event",
+                            "content": chunk["content"]
+                        })
+                        print(f"WS: EMITTED EVENT: {chunk['content']['type']}")
+            
+            # Register the writer with the global registry
+            from graph.nodes.model_graph_nodes import register_writer, clear_writer
+            register_writer(thread_id, websocket_writer)
+            
+            # Add the new message to the messages history
+            messages = state.get("messages", []).copy()
+            messages.append({
+                "role": "user", 
+                "content": message_data["message"],
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Create input state with the new message
+            input_state = state.copy()
+            input_state["messages"] = messages
+            
+            # Configure checkpoint
+            config = {
+                "configurable": {
+                    "thread_id": state["thread_id"]
+                }
+            }
+            
+            # Track events to send at the end
+            pending_events = []
+            
+            # Stream directly from LangGraph
+            print(f"[WebSocket] Starting LangGraph stream")
+            async for chunk_type, chunk in model_graph.graph.astream(
+                input_state,
+                stream_mode=["custom", "updates"],
+                config=config
+            ):
+                if chunk_type == "custom" and isinstance(chunk, dict):
+                    if chunk.get("type") == "response":
+                        await websocket.send_json({
+                            "type": "response",
+                            "content": chunk["content"]
+                        })
+                        print(f"WS: EMITTED RESPONSE TOKEN")
+                    
+                    elif chunk.get("type") == "thinking":
+                        await websocket.send_json({
+                            "type": "thinking",
+                            "content": chunk["content"]
+                        })
+                        print(f"WS: EMITTED THINKING")
+                    
+                    elif chunk.get("type") == "event":
+                        # Collect events to send individually
+                        await websocket.send_json({
+                            "type": "event",
+                            "content": chunk["content"]
+                        })
+                        print(f"WS: EMITTED EVENT: {chunk['content']['type']}")
+                        # Also collect for summary
+                        pending_events.append(chunk["content"])
                 
-                elif stream_mode == "updates":
-                    # Handle state updates (events, agent responses)
-                    for node_name, update in chunk.items():
-                        if "events" in update:
-                            for event in update["events"]:
-                                # Create a hash of the event to check for duplicates
-                                event_hash = hash(f"{event['type']}:{json.dumps(event['payload'])}")
-                                if event_hash not in sent_event_hashes:
-                                    sent_event_hashes.add(event_hash)
-                                    # Emit event immediately
-                                    await websocket.send_json({
-                                        "type": "event",
-                                        "content": event
-                                    })
-                        
-                        # If this update has a message in it, send it
-                        if node_name in ["muscle_expert", "animation_expert", "camera_expert"] and "messages" in update:
-                            messages = update["messages"]
-                            if messages and messages[-1]["role"] == "assistant":
-                                await websocket.send_json({
-                                    "type": "response",
-                                    "content": messages[-1]["content"]
-                                })
+                elif chunk_type == "updates" and isinstance(chunk, dict) and "events" in chunk:
+                    # If we received events in updates, process them
+                    for event in chunk.get("events", []):
+                        await websocket.send_json({
+                            "type": "event",
+                            "content": event
+                        })
+                        print(f"WS: EMITTED EVENT FROM UPDATES: {event['type']}")
+                        pending_events.append(event)
             
-            # Process the message with streaming
-            result = await model_graph.process_message(
-                message=message_data["message"],
-                thread_id=message_data.get("thread_id"),
-                user_id=message_data.get("user_id"),
-                stream_handler=ws_stream_handler
-            )
+            # Clean up the writer from the registry
+            clear_writer(thread_id)
             
-            # Send final metadata
+            # Get final state
+            state_result = await model_graph.graph.aget_state(config=config)
+            
+            # Extract state from tuple if needed
+            final_state = None
+            if isinstance(state_result, tuple):
+                for item in state_result:
+                    if isinstance(item, dict) and "thread_id" in item:
+                        final_state = item
+                        break
+            else:
+                final_state = state_result
+            
+            # Handle case where state extraction fails
+            if not final_state or not isinstance(final_state, dict) or "thread_id" not in final_state:
+                print(f"WARNING: Invalid state result type: {type(state_result)}")
+                # Use our initial state as fallback
+                final_state = model_graph.get_or_create_state(
+                    message_data.get("thread_id", state["thread_id"]),
+                    message_data.get("user_id", state["user_id"])
+                )
+                final_state["messages"] = messages
+            
+            # Update the model's active sessions with the final state
+            model_graph.active_sessions[final_state["thread_id"]] = final_state
+            
+            # Save to memory saver
+            try:
+                import time
+                memory_saver.put(
+                    final_state["thread_id"],
+                    {"state": final_state},
+                    {},
+                    [f"{final_state['thread_id']}_v{int(time.time())}"]
+                )
+                print(f"WS: Persisted state to memory_saver with {len(final_state.get('messages', []))} messages")
+            except Exception as e:
+                print(f"WS: Error persisting to memory_saver: {e}")
+            
+            # Send events summary if needed
+            if pending_events:
+                await websocket.send_json({
+                    "type": "events_summary",
+                    "content": {"count": len(pending_events)}
+                })
+            
+            # Send metadata and completion message
             await websocket.send_json({
                 "type": "metadata",
                 "content": {
-                    "thread_id": result["thread_id"],
-                    "user_id": result["user_id"]
+                    "thread_id": final_state["thread_id"],
+                    "user_id": final_state["user_id"]
                 }
             })
             
@@ -1057,6 +1468,7 @@ async def model_websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         # Handle other errors
         logging.error(f"Error in model websocket: {str(e)}")
+        traceback.print_exc()
         if websocket.client_state.CONNECTED:
             await websocket.send_json({"error": str(e)})
 

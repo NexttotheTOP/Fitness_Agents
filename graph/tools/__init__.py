@@ -1,6 +1,6 @@
 from graph.tools.model_control import (
     select_muscles_tool,
-    toggle_muscle_tool,
+    #toggle_muscle_tool,
     set_animation_frame_tool,
     toggle_animation_tool,
     set_camera_position_tool,
@@ -12,7 +12,7 @@ from graph.tools.model_control import (
 
 __all__ = [
     "select_muscles_tool",
-    "toggle_muscle_tool",
+    #"toggle_muscle_tool",
     "set_animation_frame_tool",
     "toggle_animation_tool",
     "set_camera_position_tool",

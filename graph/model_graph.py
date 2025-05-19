@@ -17,6 +17,8 @@ from graph.nodes.model_graph_nodes import (
     router_agent,
     muscle_control_agent,
     camera_control_agent,
+    register_writer,
+    clear_writer
 )
 
 # Create a memory checkpointer
@@ -38,18 +40,6 @@ def create_model_graph():
     # Entry point
     builder.add_edge(START, "planner")
     
-    # Remove the loop-causing edge from camera_control to execute_tools
-    # Since camera_control now directly executes its tools
-    # Add this edge back
-    builder.add_conditional_edges(
-        "camera_control",
-        lambda state: "execute_tools" if state.get("pending_camera_tool_calls") else "responder",
-        {
-            "execute_tools": "execute_tools",
-            "responder": "responder"
-        }
-    )
-
     # After planning, check which specialized agents are needed
     builder.add_conditional_edges(
         "planner",
@@ -61,26 +51,14 @@ def create_model_graph():
         }
     )
     
-    # After specialized agents, go to tool executor if they generated tool calls
-    builder.add_conditional_edges(
-        "muscle_control",
-        lambda state: "execute_tools" if (state.get("pending_muscle_tool_calls") or state.get("pending_tool_calls")) else ("camera_control" if state.get("_route_camera") else "responder"),
-        {
-            "camera_control": "camera_control",
-            "execute_tools": "execute_tools",
-            "responder": "responder"
-        }
-    )
-
-    # After execute_tools, go to camera_control if it's needed based on _route_camera flag
-    builder.add_conditional_edges(
-        "execute_tools",
-        lambda state: state.get("_route", "responder"),
-        {
-            "camera_control": "camera_control",
-            "responder": "responder"
-        }
-    )
+    # MODIFIED: Always go from muscle_control to camera_control
+    builder.add_edge("muscle_control", "camera_control")
+    
+    # MODIFIED: Always go from camera_control to execute_tools 
+    builder.add_edge("camera_control", "execute_tools")
+    
+    # MODIFIED: Always go from execute_tools to responder
+    builder.add_edge("execute_tools", "responder")
 
     # Router decides next node based on the _route field it adds to state
     builder.add_conditional_edges(
@@ -193,7 +171,7 @@ class ModelGraphInterface:
         self.active_sessions[thread_id] = new_state
         return new_state
     
-    async def process_message(self, 
+    async def process_message(self,   # may be deleted afterwards
                          message: str, 
                          thread_id: Optional[str] = None, 
                          user_id: Optional[str] = None,
@@ -211,6 +189,7 @@ class ModelGraphInterface:
         """
         # Get or create state for this session
         state = self.get_or_create_state(thread_id, user_id)
+        thread_id = state["thread_id"]
         
         # Use provided user_id or keep existing one
         if user_id and state["user_id"] != user_id:
@@ -244,26 +223,30 @@ class ModelGraphInterface:
         
         # Process the message through the graph
         if stream_handler:
-            # Use streaming and call the handler for each chunk
-            print(f"Processing with stream_handler available")
+            # Register the stream handler with our writer registry
+            register_writer(thread_id, stream_handler)
+            print(f"Registered stream handler with writer registry for thread {thread_id}")
             
-            # Create a context with the writer function
-            context = {"writer": stream_handler}
-            
-            # Stream with context
-            async for stream_mode, chunk in self.graph.astream(
-                input_state,
-                config=config,
-                stream_mode=stream_modes,
-                # context=context  # Pass writer to nodes
-            ):
-                print(f"Stream mode: {stream_mode}, chunk: {chunk}")
-                if chunk is None:
-                    continue
-                # Await the async stream_handler!
-                await stream_handler(stream_mode, chunk)
-            # Get the final state
-            final_state = await self.graph.aget_state(config=config)
+            try:
+                # Use streaming and call the handler for each chunk
+                print(f"Processing with default langgraph stream_handler")
+                # Stream with context
+                async for stream_mode, chunk in self.graph.astream(
+                    input_state,
+                    config=config,
+                    stream_mode=stream_modes,
+                ):
+                    print(f"Stream mode: {stream_mode}, chunk: {chunk}")
+                    if chunk is None:
+                        continue
+                    # Await the async stream_handler!
+                    await stream_handler(stream_mode, chunk)
+                # Get the final state
+                final_state = await self.graph.aget_state(config=config)
+            finally:
+                # Clean up the registry
+                clear_writer(thread_id)
+                print(f"Cleared stream handler from registry for thread {thread_id}")
         else:
             # Process without streaming
             print(f"Processing without stream_handler")

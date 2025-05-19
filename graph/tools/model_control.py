@@ -55,34 +55,31 @@ class ToggleMuscleInput(BaseModel):
         description="Highlight color (hex) for the muscle."
     )
 
-@tool("toggle_muscle", args_schema=ToggleMuscleInput, return_direct=False)
-def toggle_muscle_tool(state: Annotated[AgentState, InjectedState], muscle_name: str, color: Optional[str] = None) -> Dict[str, Any]:
-    """Execute the muscle toggle and update the state, with optional color."""
-    print(f"toggle_muscle_tool called with muscle: {muscle_name}, color: {color}")
-    event = {
-        "type": "model:toggleMuscle",
-        "payload": {"muscleName": muscle_name, "color": color or '#FFD600'}
-    }
-    events = state.get("events", []).copy()
-    events.append(event)
-    
-    # Update highlighted muscles
-    highlighted_muscles = state.get("highlighted_muscles", {}).copy()
-    if muscle_name in highlighted_muscles:
-        highlighted_muscles.pop(muscle_name)
-    else:
-        highlighted_muscles[muscle_name] = color or '#FFD600'
-        
-    # Deduplicate events
-    unique_events = _dedup_events(events)
-    
-    print(f"Added event: {event}")
-    result = {
-        "events": unique_events,
-        "highlighted_muscles": highlighted_muscles
-    }
-    print(f"Returning result with {len(unique_events)} events")
-    return result
+# @tool("toggle_muscle", args_schema=ToggleMuscleInput, return_direct=False)
+# def toggle_muscle_tool(state: Annotated[AgentState, InjectedState], muscle_name: str, color: Optional[str] = None) -> Dict[str, Any]:
+#     """Execute the muscle toggle and update the state, with optional color."""
+#     print(f"toggle_muscle_tool called with muscle: {muscle_name}, color: {color}")
+#     event = {
+#         "type": "model:toggleMuscle",
+#         "payload": {"muscleName": muscle_name, "color": color or '#FFD600'}
+#     }
+#     events = state.get("events", []).copy()
+#     events.append(event)
+#     # Update highlighted muscles
+#     highlighted_muscles = state.get("highlighted_muscles", {}).copy()
+#     if muscle_name in highlighted_muscles:
+#         highlighted_muscles.pop(muscle_name)
+#     else:
+#         highlighted_muscles[muscle_name] = color or '#FFD600'
+#     # Deduplicate events
+#     unique_events = _dedup_events(events)
+#     print(f"Added event: {event}")
+#     result = {
+#         "events": unique_events,
+#         "highlighted_muscles": highlighted_muscles
+#     }
+#     print(f"Returning result with {len(unique_events)} events")
+#     return result
 
 class SetAnimationFrameInput(BaseModel):
     """Set the animation frame for the 3D model."""
@@ -360,7 +357,7 @@ def _dedup_events(events):
 # Export the tools as a list of callables
 MODEL_CONTROL_TOOL_FUNCTIONS = [
     select_muscles_tool,
-    toggle_muscle_tool,
+    # toggle_muscle_tool,
     set_animation_frame_tool,
     toggle_animation_tool,
     set_camera_view_tool,
