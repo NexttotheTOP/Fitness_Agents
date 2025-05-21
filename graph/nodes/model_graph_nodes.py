@@ -36,6 +36,9 @@ from graph.nodes.model_agents import (
     reset_camera_tool,
 )
 
+# Import shared state for Socket.IO integration - use emit_event instead of our custom function
+from graph.shared_state import thread_to_sid, get_sid, emit_event
+
 # Define constants for specialized tools
 MUSCLE_CONTROL_TOOLS = [
     select_muscles_tool,
@@ -678,20 +681,28 @@ async def tool_executor_node(
     """
     new_state: ModelState = copy.deepcopy(state)
     
+    # Get thread_id upfront for logging and socket.io
+    thread_id = new_state.get("thread_id")
+    
     # Try to get writer from context if not directly provided
     if writer is None and context and "writer" in context:
         writer = context["writer"]
-        print(f"[tool_executor_node] Got writer from context!")
+        print(f"[tool_executor_node] Got writer from context for thread {thread_id}!")
     
     # If still no writer, try to get from global registry using thread_id
     if writer is None and "thread_id" in new_state:
         writer = get_writer(new_state["thread_id"])
         if writer:
-            print(f"[tool_executor_node] Got writer from global registry for thread {new_state['thread_id']}")
+            print(f"[tool_executor_node] Got writer from global registry for thread {thread_id}")
+        else:
+            print(f"[tool_executor_node] WARNING: No writer found in registry for thread {thread_id}")
+    
+    # Check active writers for debugging
+    print(f"[tool_executor_node] Active writers: {list(_active_writers.keys())}")
+    print(f"[tool_executor_node] Current thread_id: {thread_id}")
     
     # Check if this is token-only stream mode
     is_token_only = new_state.get("_token_only_stream", False)
-    thread_id = new_state.get("thread_id")
     
     # Merge tool calls from both specialized agents
     pending_muscle_calls = new_state.get("pending_muscle_tool_calls") or []
@@ -988,58 +999,6 @@ async def tool_executor_node(
                     else:
                         print(f"[tool_executor_node] Skipping duplicate event: {ev['type']}")
             
-            # If in token-only mode, check if we have thread_id and use Socket.IO to send events
-            elif is_token_only and thread_id:
-                print(f"[tool_executor_node] In token-only mode, trying Socket.IO for events. Thread ID: {thread_id}")
-                # Import socketio instance 
-                try:
-                    # Import needed only when sending via Socket.IO
-                    import sys
-                    sys.path.append('/Users/wout_vp/Code/Fitness_agents')
-                    from main import sio, thread_to_sid
-
-                    # Check if we have a Socket.IO session for this thread
-                    if thread_id in thread_to_sid:
-                        sid = thread_to_sid[thread_id]
-                        print(f"[tool_executor_node] Found Socket.IO sid {sid} for thread {thread_id}")
-                        
-                        # Send events via Socket.IO
-                        for ev in tool_result.get("events", []):
-                            event_hash = f"{ev['type']}:{json.dumps(ev['payload'])}"
-                            if event_hash not in tracked_events:
-                                tracked_events.add(event_hash)
-                                print(f"[tool_executor_node] Sending event via Socket.IO: {ev['type']}")
-                                # Use asyncio.create_task to avoid awaiting here (which would block streaming)
-                                import asyncio
-                                asyncio.create_task(sio.emit('model_event', ev, to=sid))
-                                print(f"[tool_executor_node] Scheduled Socket.IO event: {ev['type']}")
-                                
-                                # CRITICAL FIX: Also emit via the special writer if available
-                                if writer:
-                                    try:
-                                        await writer({"type": "event", "content": ev})
-                                        print(f"[tool_executor_node] Also emitted event via writer: {ev['type']}")
-                                    except Exception as writer_err:
-                                        print(f"[tool_executor_node] Error sending via writer: {writer_err}")
-                            else:
-                                print(f"[tool_executor_node] Skipping duplicate Socket.IO event: {ev['type']}")
-                    else:
-                        print(f"[tool_executor_node] No Socket.IO session ID found for thread {thread_id}")
-                        print(f"[tool_executor_node] Available threads: {list(thread_to_sid.keys())}")
-                        # Try using the global socketio instance directly
-                        try:
-                            import asyncio
-                            # Try broadcasting as a fallback
-                            for ev in tool_result.get("events", []):
-                                asyncio.create_task(sio.emit('model_event', ev))
-                                print(f"[tool_executor_node] Scheduled BROADCAST Socket.IO event: {ev['type']}")
-                        except Exception as e:
-                            print(f"[tool_executor_node] Error sending broadcast event: {e}")
-                except Exception as e:
-                    print(f"[tool_executor_node] Error sending event via Socket.IO: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    
         except Exception as err:
             print(f"[tool_executor_node] Error executing {call}: {err}")
             import traceback
@@ -1100,45 +1059,21 @@ async def tool_executor_node(
         
         # Send a final update for all events
         await writer({"type": "updates", "content": {"events": unique_events}})
-    
-    # For token-only streams, also send events via Socket.IO
-    elif is_token_only and thread_id and unique_events:
-        print(f"[tool_executor_node] In token-only mode, sending all events via Socket.IO")
-        try:
-            # Import needed only when sending via Socket.IO
-            import sys
-            sys.path.append('/Users/wout_vp/Code/Fitness_agents')
-            from main import sio, thread_to_sid
-            
-            if thread_id in thread_to_sid:
-                sid = thread_to_sid[thread_id]
-                print(f"[tool_executor_node] Sending all events via Socket.IO to sid {sid}")
-                
-                # Use asyncio to schedule event sending
-                import asyncio
-                for ev in unique_events:
-                    asyncio.create_task(sio.emit('model_event', ev, to=sid))
-                
-                # Also send the full batch as an update
-                asyncio.create_task(sio.emit('model_events', {"events": unique_events}, to=sid))
-                print(f"[tool_executor_node] Scheduled batch of {len(unique_events)} events via Socket.IO")
-            else:
-                print(f"[tool_executor_node] No Socket.IO session found for thread {thread_id}")
-                print(f"[tool_executor_node] Available threads: {list(thread_to_sid.keys())}")
-                
-                # Try broadcasting as a fallback
-                import asyncio
-                for ev in unique_events:
-                    asyncio.create_task(sio.emit('model_event', ev))
-                asyncio.create_task(sio.emit('model_events', {"events": unique_events}))
-                print(f"[tool_executor_node] Scheduled BROADCAST of {len(unique_events)} events via Socket.IO")
-        except Exception as e:
-            print(f"[tool_executor_node] Error sending events batch via Socket.IO: {e}")
-            import traceback
-            traceback.print_exc()
-    elif DEBUG_MODE:
+    else:
         print(f"[tool_executor_node] NO WRITER AVAILABLE! Cannot stream {len(unique_events)} events to frontend!")
 
+    # IMPORTANT: Regardless of writer availability, always try to emit events via Socket.IO
+    # This ensures events reach the frontend even if the streaming writer isn't available
+    if thread_id:
+        for event in unique_events:
+            # Use the shared emit_event function
+            await emit_event(event, thread_id)
+        
+        # Also send a summary
+        if unique_events:
+            summary_event = {"type": "events_summary", "count": len(unique_events)}
+            await emit_event(summary_event, thread_id)
+    
     return new_state
 
 # ---------------------------------------------------------------------------
@@ -1149,32 +1084,20 @@ async def responder_node(
     state: ModelState,
     writer: Optional[StreamWriter] = None,
     context: Optional[Dict[str, Any]] = None,
-) -> ModelState:
+):
     """Generate the final assistant message after all tools have run."""
     new_state: ModelState = copy.deepcopy(state)
     
-    # Check if this is a token-only stream
-    token_only = new_state.get("_token_only_stream", False)
-    
-    # Get writer from context or registry
-    if writer is None and context and "writer" in context:
-        writer = context["writer"]
-    
-    if writer is None and "thread_id" in new_state:
-        writer = get_writer(new_state["thread_id"])
-        if writer:
-            print(f"[responder_node] Retrieved writer from registry for thread {new_state['thread_id']}")
-    
-    # Get thread_id for Socket.IO fallback if needed
-    thread_id = new_state.get("thread_id")
-    
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # Check iteration count to prevent infinite loops
     iteration_count = new_state.get("_planner_iterations", 0)
     print(f"[responder_node] Iteration count: {iteration_count}, Events: {len(new_state.get('events', []))}")
     
     # Reset iteration counter for future messages
     new_state["_planner_iterations"] = 0
+    #++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     
+    final_text = ""
     # Extract conversation history
     messages_history = new_state.get("messages", []).copy()
     
@@ -1243,78 +1166,39 @@ async def responder_node(
     # Create full prompt chain with conversation history
     prompt_chain = [system_prompt] + conversation_messages
     
-    final_text = ""
     
-    # Try to stream using the writer
-    if writer:
-        print(f"[responder_node] Streaming response using registered writer")
-        try:
-            # Stream the LLM response token-by-token.
-            async for chunk in _llm_streaming.astream(prompt_chain):
-                token = chunk.content if hasattr(chunk, "content") else chunk
-                if token:  # Ensure we only emit real tokens
-                    print(f"[responder_node] Streaming token: {token}")
-                    await writer({"type": "response", "content": token})
-                    final_text += token
-            
-            print(f"[responder_node] Finished streaming. Total response length: {len(final_text)}")
-        except Exception as e:
-            print(f"[responder_node] Error during streaming: {e}")
-            # Fall back to non-streaming if there was an error
-            resp = await _llm_streaming.ainvoke(prompt_chain)
-            final_text = resp.content
-            print(f"[responder_node] Used fallback non-streaming. Response length: {len(final_text)}")
-    
-    # No writer available, use non-streaming
-    else:
-        print(f"[responder_node] No writer available, using non-streaming LLM call")
-        
-        # For token-only streams, try Socket.IO as a fallback
-        if token_only and thread_id:
-            try:
-                import sys
-                sys.path.append('/Users/wout_vp/Code/Fitness_agents')
-                from main import sio, thread_to_sid
+    try:
+        # Always use streaming
+        async for chunk in _llm_streaming.astream(prompt_chain):
+            token = chunk.content if hasattr(chunk, "content") else chunk
+            if token:
+                # print(f"[responder_node] Directly streaming token: {token}")
+                new_state["generation"] = new_state.get("generation", "") + token
+                final_text += token
                 
-                if thread_id in thread_to_sid:
-                    sid = thread_to_sid[thread_id]
-                    print(f"[responder_node] Using Socket.IO fallback for token streaming to sid {sid}")
-                    
-                    # Use streaming but emit via Socket.IO
-                    async for chunk in _llm_streaming.astream(prompt_chain):
-                        token = chunk.content if hasattr(chunk, "content") else chunk
-                        if token:
-                            import asyncio
-                            await sio.emit('model_token', {"content": token}, to=sid)
-                            final_text += token
-                            
-                    print(f"[responder_node] Finished Socket.IO token streaming. Length: {len(final_text)}")
-                else:
-                    # No Socket.IO session, fall back to normal call
-                    resp = await _llm_streaming.ainvoke(prompt_chain)
-                    final_text = resp.content
-            except Exception as e:
-                print(f"[responder_node] Socket.IO streaming error: {e}")
-                # Fall back to non-streaming
-                resp = await _llm_streaming.ainvoke(prompt_chain)
-                final_text = resp.content
-        else:
-            # Normal non-streaming call
-            resp = await _llm_streaming.ainvoke(prompt_chain)
-            final_text = resp.content
+                # Yield for streaming
+                yield {"type": "response", "content": token}
+        
+        print(f"[responder_node] Finished streaming. Total response length: {len(final_text)}")
+    except Exception as e:
+        print(f"[responder_node] Error during streaming: {e}")
+        # Fall back to non-streaming
+        resp = await _llm_streaming.ainvoke(prompt_chain)
+        final_text = resp.content
+        print(f"[responder_node] Used fallback non-streaming. Response length: {len(final_text)}")
+        yield {"type": "response", "content": final_text}
 
-    # Append final assistant message to conversation history.
+    # Update state
     messages = new_state.get("messages", []).copy()
     messages.append({
         "role": "assistant", 
         "content": final_text,
-        "timestamp": datetime.now().isoformat()  # Add timestamp to assistant message
+        "timestamp": datetime.now().isoformat()
     })
     new_state["messages"] = messages
 
     # Clean up internal fields
     new_state["assistant_draft"] = None
-    # Clear events after generation to prevent duplicate events on next call
     new_state["events"] = []
     new_state["_route_camera"] = False
     new_state["_route_muscle"] = False
@@ -1323,7 +1207,9 @@ async def responder_node(
     new_state["_just_executed_muscle_tools"] = False
     new_state["_tool_executions"] = 0
 
-    return new_state
+    # IMPORTANT: Instead of returning, just set a state field for LangGraph to use
+    new_state["final_state"] = True
+    # Don't put any return statement here!
 
 async def muscle_control_agent(
     state: ModelState,

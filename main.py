@@ -21,6 +21,8 @@ from graph.workout_state import Workout, UserProfile, WorkoutState, AgentState, 
 from graph.fitness_coach_graph import get_initial_state, process_query, stream_response, app 
 from fastapi.middleware.cors import CORSMiddleware
 from graph.chains.workout_variation import analyze_workout
+# Import shared state module
+from graph.shared_state import thread_to_sid, register_sid, get_sid, register_socketio, emit_event
 
 # Add RAG imports
 from langchain_chroma import Chroma
@@ -53,10 +55,13 @@ sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 # Wrap FastAPI app with Socket.IO ASGI app
 app = socketio.ASGIApp(sio, api)
 
+# Register the Socket.IO instance with shared_state
+register_socketio(sio)
+print("Registered Socket.IO instance with shared_state")
+
 memory_saver = MemorySaver()
 
-# Dictionary to track Socket.IO sessions by thread_id
-thread_to_sid = {}
+# Note: We're no longer defining thread_to_sid here - it's now in shared_state.py
 
 # Helper function to extract final state from LangGraph results
 def _extract_final_state(state_result, thread_id, user_id, messages):
@@ -119,9 +124,8 @@ async def handle_model_message(sid, data):
         user_id = state["user_id"]
         
         # Store the Socket.IO session ID with the thread for future use
-        thread_to_sid[thread_id] = sid
-        print(f"Registered Socket.IO session {sid} for thread {thread_id}")
-        print(f"Active thread_to_sid mappings: {list(thread_to_sid.keys())}")
+        # Use shared state function instead of direct dictionary access
+        register_sid(thread_id, sid)
         
         # Copy message history and add new message
         messages = state.get("messages", []).copy()
@@ -163,12 +167,15 @@ async def handle_model_message(sid, data):
                     print(f"EMITTED THINKING: {chunk['content']}")
                 
                 elif chunk_type == "event":
-                    # Emit events immediately
+                    # Emit events immediately and add logging
+                    print(f"[socket_io_writer] Emitting event: {chunk['content']['type']}")
                     await sio.emit('model_event', chunk["content"], to=sid)
-                    print(f"EMITTED EVENT: {chunk['content']['type']}")
+                    print(f"[socket_io_writer] Successfully emitted event: {chunk['content']['type']}")
         
-        # Register the writer with the global registry for graph nodes to use
+        # Register the writer with the global registry
         from graph.nodes.model_graph_nodes import register_writer, clear_writer
+        # IMPORTANT: Clear any existing writer first to avoid stale references
+        clear_writer(thread_id)
         register_writer(thread_id, socket_io_writer)
         print(f"Registered writer for thread {thread_id}")
         
@@ -185,7 +192,7 @@ async def handle_model_message(sid, data):
         try:
             async for chunk_type, chunk in model_graph.graph.astream(
                 input_state,
-                stream_mode=["custom", "updates"],
+                stream_mode=["custom", "updates", "messages"],
                 config=config
             ):
                 if chunk_type == "custom" and isinstance(chunk, dict):
@@ -219,6 +226,23 @@ async def handle_model_message(sid, data):
                                 await sio.emit('model_event', event, to=sid)
                                 print(f"EMITTED EVENT FROM UPDATES: {event['type']}")
                                 pending_events.append(event)
+                elif chunk_type == "messages":
+                    # chunk is a tuple (message_chunk, metadata)
+                    message_chunk, _meta = chunk
+                    token = None
+                    if hasattr(message_chunk, "content"):
+                        token = message_chunk.content
+                    elif isinstance(message_chunk, str):
+                        token = message_chunk
+                    if token:
+                        token_buffer += token
+                        await sio.emit('model_response', {
+                            "response": token,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "stream": True
+                        }, to=sid)
+                        print(f"EMITTED RESPONSE TOKEN: '{token}'")
         except Exception as e:
             print(f"Error during LangGraph streaming: {e}")
             import traceback
@@ -316,7 +340,7 @@ async def handle_model_start(sid, data):
         print(f"Generated new thread_id: {thread_id}")
     
     # Store the Socket.IO session ID with the thread 
-    thread_to_sid[thread_id] = sid
+    register_sid(thread_id, sid)
     print(f"Registered Socket.IO session {sid} for thread {thread_id}")
     print(f"Active thread_to_sid mappings: {list(thread_to_sid.keys())}")
     
@@ -1072,7 +1096,7 @@ async def model_chat_stream(request: ModelChatRequest):
         print(f"[HTTP Stream] Starting LangGraph stream")
         async for chunk_type, chunk in model_graph.graph.astream(
             input_state,
-            stream_mode=["custom", "updates"],
+            stream_mode=["custom", "updates", "messages"],
             config=config
         ):
             if chunk_type == "custom" and isinstance(chunk, dict):
@@ -1094,10 +1118,27 @@ async def model_chat_stream(request: ModelChatRequest):
             elif chunk_type == "updates" and isinstance(chunk, dict):
                 # Check for events field in updates
                 if "events" in chunk and isinstance(chunk["events"], list):
-                    for event in chunk["events"]:
+                    for event in chunk.get("events", []):
                         if isinstance(event, dict) and "type" in event:
                             pending_events.append(event)
                             yield f"data: {json.dumps({'type':'event','content':event})}\n\n"
+            
+            # Direct node stream yields (LLM tokens via "messages" mode)
+            elif chunk_type == "messages":
+                # chunk is a tuple (message_chunk, metadata)
+                message_chunk, _meta = chunk
+                token = None
+                if hasattr(message_chunk, "content"):
+                    token = message_chunk.content
+                elif isinstance(message_chunk, str):
+                    token = message_chunk
+                if token:
+                    token_count += 1
+                    token_content += token
+                    #print(f"[HTTP] Messages stream token #{token_count}: '{token}'")
+                    yield f"event: token\ndata: {json.dumps({'content': token})}\n\n"
+                    yield ":\n\n"
+                    await asyncio.sleep(0)
         
         # Clean up streaming flag
         state.pop("_is_http_streaming", None)
@@ -1158,42 +1199,40 @@ async def model_chat_stream(request: ModelChatRequest):
 async def model_token_stream(
     message: str,
     thread_id: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    sid: Optional[str] = None  # Allow passing Socket.IO SID directly
 ):
     """Stream ONLY the LLM tokens to the client using HTTP streaming."""
     
     async def stream_tokens():
         # Get or create state - Don't use nonlocal as these are function parameters
         state = model_graph.get_or_create_state(thread_id, user_id)
-        # Update variables from state so we send back correct IDs
         thread_id_to_use = state["thread_id"]
         user_id_to_use = state["user_id"]
         
-        # Send response metadata first
-        yield f"event: metadata\ndata: {json.dumps({'thread_id': thread_id_to_use, 'user_id': user_id_to_use})}\n\n"
+        # CRITICAL: Ensure this thread ID is registered in thread_to_sid
+        # If we don't have a Socket.IO session yet, create a mapping using thread_id as SID
+        # This ensures tool_executor_node can always find a way to emit events
+        if not get_sid(thread_id_to_use):
+            # If sid was provided explicitly, use it
+            if sid:
+                register_sid(thread_id_to_use, sid)
+                print(f"[HTTP] Registered provided Socket.IO SID {sid} for thread {thread_id_to_use}")
+            else:
+                # Otherwise, use thread_id as a fallback SID for broadcasting
+                register_sid(thread_id_to_use, thread_id_to_use)
+                print(f"[HTTP] No Socket.IO SID available, using thread_id as SID: {thread_id_to_use}")
+                
+        print(f"[HTTP] Active thread_to_sid mappings: {list(thread_to_sid.keys())}")
         
-        # CRITICAL: Add Socket.IO session tracking for events
-        if thread_id_to_use in thread_to_sid:
-            sid = thread_to_sid[thread_id_to_use]
-            print(f"Found Socket.IO session {sid} for thread {thread_id_to_use}")
-            
-            # Register a Socket.IO writer for events
-            async def socket_io_writer(chunk):
-                if isinstance(chunk, dict) and "type" in chunk:
-                    chunk_type = chunk["type"]
-                    
-                    if chunk_type == "event":
-                        # Send events via Socket.IO
-                        await sio.emit('model_event', chunk["content"], to=sid)
-                        print(f"Emitted event via Socket.IO: {chunk['content']['type']}")
-                    elif chunk_type == "thinking":
-                        await sio.emit('model_thinking', {"content": chunk["content"]}, to=sid)
-                        print(f"Emitted thinking via Socket.IO: {chunk['content']}")
-            
-            # Register this writer
-            from graph.nodes.model_graph_nodes import register_writer
-            register_writer(thread_id_to_use, socket_io_writer)
-            print(f"Registered Socket.IO writer for thread {thread_id_to_use}")
+        # Send metadata
+        yield f"event: metadata\ndata: {json.dumps({'thread_id': thread_id_to_use, 'user_id': user_id_to_use})}\n\n"
+        yield f"event: thinking\ndata: {json.dumps({'content': 'Analyzing your question...'})}\n\n"
+        
+        # Check if we have a Socket.IO session for this thread
+        sid = get_sid(thread_id_to_use)
+        if sid:
+            print(f"[HTTP] Found Socket.IO session {sid} for thread {thread_id_to_use}")
         
         # Add the new message to state
         messages = state.get("messages", []).copy()
@@ -1207,6 +1246,11 @@ async def model_token_stream(
         input_state = state.copy()
         input_state["messages"] = messages
         
+        # CRITICAL: Set flag to inform tool_executor_node to use Socket.IO for events
+        # This enables parallel channel event sending while keeping SSE for tokens
+        input_state["_token_only_stream"] = True
+        input_state["_sse_sid"] = sid  # Pass the Socket.IO session ID if available
+        
         # Configure checkpoint
         config = {
             "configurable": {
@@ -1214,68 +1258,130 @@ async def model_token_stream(
             }
         }
         
-        # Flag this as a token-only stream so nodes know not to send events here
-        input_state["_token_only_stream"] = True
+        # Tracking
+        token_count = 0
+        token_content = ""
         
-        # Send a thinking event
-        yield f"event: thinking\ndata: {json.dumps({'content': 'Analyzing your question...'})}\n\n"
-        
-        # Stream from LangGraph
-        async for chunk_type, chunk in model_graph.graph.astream(
-            input_state,
-            stream_mode=["custom", "updates"],  # Add updates to get events too
-            config=config
-        ):
-            if chunk_type == "custom" and isinstance(chunk, dict):
-                if chunk.get("type") == "response":
-                    # Make sure chunk is not None or empty
-                    content = chunk.get("content", "")
-                    if content:
-                        # Debug output
-                        print(f"Streaming token: '{content}'")
-                        # Ensure proper SSE format
-                        yield f"event: token\ndata: {json.dumps({'content': content})}\n\n"
+        # Stream directly from LangGraph
+        print(f"[HTTP] Starting direct token streaming from LangGraph")
+        try:
+            # Include "node_stream" so we also get direct generator yields from nodes like responder_node
+            async for chunk_type, chunk in model_graph.graph.astream(
+                input_state,
+                stream_mode=["custom", "updates", "messages"],
+                config=config
+            ):
+                
+                # Custom yields (e.g. events coming via StreamWriter)
+                if chunk_type == "custom" and isinstance(chunk, dict):
+                    if chunk.get("type") == "response" and "content" in chunk:
+                        token = chunk["content"]
+                        token_count += 1
+                        token_content += token
+                        print(f"[HTTP] Custom stream token #{token_count}: '{token}'")
+                        yield f"event: token\ndata: {json.dumps({'content': token})}\n\n"
+                        yield ":\n\n"  # Force flush
+                        await asyncio.sleep(0)
+                    
+                    elif chunk.get("type") == "thinking":
+                        yield f"event: thinking\ndata: {json.dumps({'content': chunk.get('content', '')})}\n\n"
+                    
+                    elif chunk.get("type") == "event":
+                        # Directly stream the event - will also be sent via Socket.IO in tool_executor_node
+                        event_content = chunk.get("content", {})
+                        yield f"event: event\ndata: {json.dumps({'content': event_content})}\n\n"
                         
-                elif chunk.get("type") == "thinking":
-                    # Stream thinking updates too
-                    yield f"event: thinking\ndata: {json.dumps({'content': chunk.get('content', '')})}\n\n"
-                    
-                elif chunk.get("type") == "event":
-                    # Also stream event info to HTTP client (in addition to Socket.IO)
-                    yield f"event: event\ndata: {json.dumps({'content': chunk.get('content', {})})}\n\n"
-                    
-            # Process updates (events) to ensure they're captured by the Socket.IO writer
-            elif chunk_type == "updates" and isinstance(chunk, dict) and "events" in chunk:
-                # Also stream events summary to HTTP client
-                events = chunk.get("events", [])
-                if events:
-                    yield f"event: events_batch\ndata: {json.dumps({'count': len(events)})}\n\n"
+                        # Also emit via Socket.IO if we have a session ID
+                        if sid:
+                            try:
+                                await sio.emit('model_event', event_content, to=sid)
+                                print(f"[HTTP] Also emitted event via Socket.IO: {event_content.get('type', 'unknown')}")
+                            except Exception as e:
+                                print(f"[HTTP] Error sending event via Socket.IO: {e}")
+                
+                # Direct node stream yields (e.g. responder_node token generator)
+                elif chunk_type == "messages":
+                    # chunk is a tuple (message_chunk, metadata)
+                    message_chunk, metadata = chunk
+                    token = None
+                    if hasattr(message_chunk, "content"):
+                        token = message_chunk.content
+                    elif isinstance(message_chunk, str):
+                        token = message_chunk
+                    # FILTER: Only yield if from responder node
+                    if metadata:
+                        #print(f"[HTTP] Message metadata: {json.dumps(metadata)}")
+                        if metadata.get("langgraph_node") != "responder":
+                            continue
+                    if token:
+                        token_count += 1
+                        token_content += token
+                        yield f"event: token\ndata: {json.dumps({'content': token})}\n\n"
+                        yield ":\n\n"
+                        await asyncio.sleep(0)
+                
+                # Updates/model events batched in state
+                elif chunk_type == "updates" and isinstance(chunk, dict) and "events" in chunk:
+                    events = chunk.get("events", [])
+                    if events:
+                        # Emit each event individually
+                        for event in events:
+                            if isinstance(event, dict) and "type" in event:
+                                yield f"event: event\ndata: {json.dumps({'content': event})}\n\n"
+                                # Also emit via Socket.IO if we have a session ID
+                                if sid:
+                                    try:
+                                        await sio.emit('model_event', event, to=sid)
+                                        print(f"[HTTP] Also emitted event via Socket.IO from updates: {event.get('type', 'unknown')}")
+                                    except Exception as e:
+                                        print(f"[HTTP] Error sending event via Socket.IO: {e}")
+                        
+                        # Also emit summary
+                        yield f"event: events_batch\ndata: {json.dumps({'count': len(events)})}\n\n"
         
-        # Get final state and update in memory
-        state_result = await model_graph.graph.aget_state(config=config)
-        
-        # Extract and store final state
-        final_state = _extract_final_state(state_result, thread_id_to_use, user_id_to_use, messages)
-        model_graph.active_sessions[final_state["thread_id"]] = final_state
-        
-        # Clean up the writer
-        from graph.nodes.model_graph_nodes import clear_writer
-        clear_writer(thread_id_to_use)
-        print(f"Cleared Socket.IO writer for thread {thread_id_to_use}")
-        
-        # Send completion message with the full final response
-        latest_messages = final_state.get("messages", [])
-        final_response = ""
-        if latest_messages and latest_messages[-1]["role"] == "assistant":
-            final_response = latest_messages[-1].get("content", "")
-        
-        yield f"event: complete\ndata: {json.dumps({'content': final_response})}\n\n"
-        
-        # Signal completion with done event
-        yield "event: done\ndata: {}\n\n"
+            # Get final content
+            state_result = await model_graph.graph.aget_state(config=config)
+            final_state = _extract_final_state(state_result, thread_id_to_use, user_id_to_use, messages)
+            model_graph.active_sessions[final_state["thread_id"]] = final_state
+            
+            # Get final message
+            latest_messages = final_state.get("messages", [])
+            final_response = ""
+            if latest_messages and latest_messages[-1]["role"] == "assistant":
+                final_response = latest_messages[-1].get("content", "")
+            
+            print(f"[HTTP] Streaming complete! Sent {token_count} tokens")
+            
+            # Completion events
+            yield f"event: complete\ndata: {json.dumps({'content': final_response})}\n\n"
+            yield "event: done\ndata: {}\n\n"
+            
+        except Exception as e:
+            print(f"Error during streaming: {e}")
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     
     return StreamingResponse(
         stream_tokens(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Transfer-Encoding": "chunked"
+        }
+    )
+
+@api.get("/model/test-token-stream")
+async def test_token_stream():
+    async def stream_test():
+        for i in range(30):
+            yield f"event: token\ndata: {json.dumps({'content': f'Test token {i}'})}\n\n"
+            yield ":\n\n"  # Force flush
+            await asyncio.sleep(0.5)  # Simulate realistic token timing
+            
+    return StreamingResponse(
+        stream_test(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1306,6 +1412,11 @@ async def model_websocket_endpoint(websocket: WebSocket):
                 message_data.get("user_id")
             )
             thread_id = state["thread_id"]
+            
+            # Register websocket SID (using websocket.client.host as SID)
+            client_id = str(id(websocket))
+            register_sid(thread_id, client_id)
+            print(f"[WebSocket] Registered client {client_id} for thread {thread_id}")
             
             # Define a writer function for the WebSocket
             async def websocket_writer(chunk):
