@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 # Add Anthropic imports
 import anthropic
 from anthropic import Anthropic
+# Add stream writer for custom streaming
+from langgraph.config import get_stream_writer
 
 # Load environment variables
 load_dotenv()
@@ -281,21 +283,23 @@ class ProfileAgent:
         return formatted_images
     
     async def _analyze_body_composition(self, user_profile):
-        """Analyze body composition using a vision model and user input"""
+        """Analyze body composition using a vision model and user input - now streams tokens"""
         print("Starting body composition analysis...")
         
         # Exit early if no imagePaths found
         image_paths = user_profile.get("imagePaths", {})
         if not image_paths or not any(image_paths.values()):
             print("No body photos found in profile, cannot analyze body composition")
-            return None
-
+            #yield "No body photos found for analysis."
+            return  # Just return without value
+            
         # Format the images for API call
         formatted_images = self._format_body_photos(user_profile)
         
         if not formatted_images:
             print("No valid body photos could be processed, skipping analysis")
-            return None
+            #yield "Unable to process body photos for analysis."
+            return  # Just return without value
             
         print(f"Formatted {len(formatted_images)} images for analysis")
         
@@ -340,8 +344,11 @@ User details:
                - Use standard markdown for lists and formatting
                - Separate major sections with a blank line
                - Keep your analysis concise and easy to read
-               - Always end your response with "---" (three dashes) as a separator
+               - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 """
+        
+        # Accumulated analysis text
+        analysis = ""
         
         if self.use_claude:
             # For Claude API
@@ -382,27 +389,38 @@ User details:
                 
                 print(f"Sending request to Claude vision model with {len(messages)} messages")
                 
-                # Make the API call to Claude
-                response = self.anthropic_client.messages.create(
+                # Stream the response from Claude
+                stream = self.anthropic_client.messages.create(
                     model=self.claude_model,
                     max_tokens=1024,
-                    messages=messages
+                    messages=messages,
+                    stream=True
                 )
-                
-                # Extract the analysis from the response
-                analysis = response.content[0].text
+                for chunk in stream:
+                    print("CHUNK:", chunk)
+                    # Skip tuples or non-content objects
+                    if isinstance(chunk, tuple):
+                        continue
+                    if hasattr(chunk, "type") and chunk.type == "content_block_delta":
+                        if hasattr(chunk, "delta") and hasattr(chunk.delta, "type") and chunk.delta.type == "text_delta":
+                            token = chunk.delta.text
+                            if token:
+                                analysis += token
+                                yield token
                 
                 # Print a sample of the response for debugging
                 print(f"Analysis response received, {len(analysis)} chars")
                 print(f"Sample of analysis: {analysis[:150]}...")
                 
-                return analysis
+                # Don't return analysis - just end the generator
+                return
             except Exception as e:
                 print(f"Error during body composition analysis with Claude: {str(e)}")
                 # Print more detailed error information
                 import traceback
                 print(f"Detailed error: {traceback.format_exc()}")
-                return None
+                #yield f"Error analyzing body photos: {str(e)}"
+                return
         else:
             # For OpenAI API (existing code)
             # Create a content array for the message
@@ -439,25 +457,35 @@ User details:
                 messages = [HumanMessage(content=content)]
                 print(f"Sending request to vision model with {len(messages)} messages")
                 
-                response = await self.vision_model.ainvoke(messages)
-                
-                # Extract the analysis from the response
-                analysis = response.content
+                # Stream the response from OpenAI
+                async for chunk in self.vision_model.astream(messages):
+                    token = chunk.content
+                    if token:
+                        analysis += token
+                        yield token
                 
                 # Print a sample of the response for debugging
                 print(f"Analysis response received, {len(analysis)} chars")
                 print(f"Sample of analysis: {analysis[:150]}...")
                 
-                return analysis
+                # Don't return analysis - just end the generator
+                return
             except Exception as e:
-                print(f"Error during body composition analysis: {str(e)}")
+                print(f"Error during body analysis streaming: {str(e)}")
                 # Print more detailed error information
                 import traceback
                 print(f"Detailed error: {traceback.format_exc()}")
-                return None
+                #yield f"Error analyzing body photos: {str(e)}"
+                return
 
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream the profile analysis"""
+        # Get stream writer for emitting events
+        writer = get_stream_writer()
+        
+        # Emit start step
+        writer({"type": "step", "content": "Starting profile analysis..."})
+        
         if not state["user_profile"]:
             state["user_profile"] = UserProfile().dict()
         
@@ -473,169 +501,39 @@ User details:
             previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
             previous_body_analysis = state["previous_sections"].get("body_analysis", "")
         
-        if has_body_photos:
-            # Stream the body composition analysis
-            body_analysis = await self._analyze_body_composition(state["user_profile"])
+        # Emit progress event
+        writer({"type": "step", "content": "Analyzing user profile data..."})
+        
+        # Check if body analysis is already in the state (from streaming endpoint)
+        body_analysis = state.get("body_analysis")
+        
+        if has_body_photos and not body_analysis:
+            # If we have body photos but no analysis yet, perform and stream it
+            # Emit body analysis step
+            writer({"type": "step", "content": "Analyzing body composition from photos..."})
             
-            # Prepare prompts with body analysis and previous data
-            profile_prompt = f"""
-                [Persona]
-                You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
-
-                [Task]
-                Analyze the client's current profile data and body analysis, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes, improvements, and areas needing attention.
-
-                [Context]
-                --- CURRENT CLIENT PROFILE ---
-                {json.dumps(state["user_profile"])}
-
-                --- CURRENT BODY ANALYSIS ---
-                {body_analysis}
-
-                {f'''--- PREVIOUS ASSESSMENTS ---
-                Previous Profile Assessment:
-                {previous_profile_assessment}
-
-                Previous Body Analysis:
-                {previous_body_analysis}
-                ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
-
-                [Instructions]
-                1. Create a clear, structured assessment with the following sections:
-                - Current fitness status overview
-                - Analysis of body composition and structure 
-                - Alignment between client's goals and current physical state
-                - Realistic timeframes for achieving stated goals
-                - Key focus areas for improvement
-
-                2. {f'''Progress Comparison Analysis:
-                - Compare current measurements/stats with previous assessment
-                - Identify specific improvements in body composition, posture, or muscle development
-                - Quantify changes in weight, muscle mass, and body fat percentage when possible
-                - Highlight areas showing good progress
-                - Identify areas still requiring targeted work
-                - Analyze if progress is aligned with previously stated goals
-                ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
-
-                3. Professional tone:
-                - Be honest but encouraging
-                - Use precise, measurable language
-                - Avoid generic statements; be specific to this client
-                - Balance constructive feedback with positive reinforcement
-
-                4. Formatting guidelines:
-                - Use "## Profile Assessment" as the main section header
-                - Use only H3 ("###") headings for subsections 
-                - NEVER use level 2 headings (##) for any subsection - only for the main section title
-                - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
-                - Use horizontal rules (---) to separate major sections
-                - Use bullet points for lists of recommendations
-                - Keep paragraphs concise and easy to read
-                - Always end your response with "---" (three dashes) as a separator
-
-                Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
-            """
+            # Stream the body composition analysis token by token
+            body_analysis_content = ""
+            async for token in self._analyze_body_composition(state["user_profile"]):
+                if token:
+                    body_analysis_content += token
+                    # Stream each token
+                    writer({"type": "profile", "content": token})
+                    yield token
             
-            async for chunk in self.llm.astream(profile_prompt):
-                yield chunk.content
+            # Store the complete body analysis in the state
+            if body_analysis_content and len(body_analysis_content) > 50:
+                state["body_analysis"] = body_analysis_content
+                body_analysis = body_analysis_content
                 
-            # Store the body analysis in the state
-            state["body_analysis"] = body_analysis
-            if "body_type" not in state["user_profile"] or not state["user_profile"]["body_type"]:
-                # Try to extract body_type from the body analysis
-                if "body type:" in body_analysis.lower():
-                    body_type_part = body_analysis.lower().split("body type:")[1].strip()
-                    body_type = body_type_part.split("\n")[0].strip()
-                    state["user_profile"]["body_type"] = body_type
-                elif "somatotype:" in body_analysis.lower():
-                    body_type_part = body_analysis.lower().split("somatotype:")[1].strip()
-                    body_type = body_type_part.split("\n")[0].strip()
-                    state["user_profile"]["body_type"] = body_type
-        else:
-            # Standard profile analysis without body photos, but include previous data
-            profile_prompt = f"""
-                [Persona]
-                You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
-
-                [Task]
-                Analyze the client's current profile data, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes and areas needing attention.
-
-                [Context]
-                --- CURRENT CLIENT PROFILE ---
-                {json.dumps(state["user_profile"])}
-
-                {f'''--- PREVIOUS ASSESSMENTS ---
-                Previous Profile Assessment:
-                {previous_profile_assessment}
-
-                Previous Body Analysis:
-                {previous_body_analysis}
-                ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
-
-                [Instructions]
-                1. Create a clear, structured assessment with the following sections:
-                - Current fitness status overview based on provided metrics
-                - Analysis of client's stated goals and their achievability
-                - Alignment between dietary preferences and fitness goals
-                - Realistic recommendations for fitness journey
-
-                2. {f'''Progress Comparison Analysis:
-                - Compare current profile metrics with previous assessment
-                - Identify changes in weight, age, activity level, or goals
-                - Analyze if their goals have shifted over time
-                - Evaluate progress based on available information
-                - Provide continuity in recommendations based on their journey
-                ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
-
-                3. Professional tone:
-                - Be honest but encouraging
-                - Use precise, measurable language
-                - Identify any missing information that would be valuable for assessment
-                - Provide actionable recommendations based on available data
-                - Balance constructive feedback with positive reinforcement
-
-                4. Formatting guidelines:
-                - Use "## Profile Assessment" as the main section header
-                - NEVER use level 2 headings (##) for any subsection - only for the main section title
-                - Use only H3 ("###") headings for subsections
-                - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
-                - Use horizontal rules (---) to separate major sections
-                - Use bullet points for lists of recommendations
-                - Keep paragraphs concise and easy to read
-                - Always end your response with "---" (three dashes) as a separator
-
-                Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
-            """
-            
-            async for chunk in self.llm.astream(profile_prompt):
-                yield chunk.content
-
-    async def _call_with_body_analysis(self, state: WorkoutState) -> WorkoutState:
-        """Process state with body analysis using vision model"""
-        body_analysis = await self._analyze_body_composition(state["user_profile"])
+                # Signal completion
+                writer({"type": "step", "content": "Body analysis complete. Generating profile assessment..."})
+        elif body_analysis and has_body_photos:
+            # Body analysis was already performed in the endpoint
+            writer({"type": "step", "content": "Using previously generated body analysis for profile assessment..."})
+            # We don't need to yield it again since it was already streamed from the endpoint
         
-        # Update the state with body analysis
-        state["body_analysis"] = body_analysis
-        
-        # Extract body type if present
-        if body_analysis:
-            if "body type:" in body_analysis.lower():
-                body_type_part = body_analysis.lower().split("body type:")[1].strip()
-                body_type = body_type_part.split("\n")[0].strip()
-                state["user_profile"]["body_type"] = body_type
-            elif "somatotype:" in body_analysis.lower():
-                body_type_part = body_analysis.lower().split("somatotype:")[1].strip()
-                body_type = body_type_part.split("\n")[0].strip()
-                state["user_profile"]["body_type"] = body_type
-        
-        # Get previous data if available
-        previous_profile_assessment = None
-        previous_body_analysis = None
-        if state.get("previous_sections"):
-            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
-            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
-        
-        # Create full profile analysis with previous data
+        # Prepare prompts with body analysis and previous data
         profile_prompt = f"""
             [Persona]
             You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
@@ -683,20 +581,132 @@ User details:
 
             4. Formatting guidelines:
             - Use "## Profile Assessment" as the main section header
+            - Use only H3 ("###") headings for subsections 
+            - NEVER use level 2 headings (##) for any subsection - only for the main section title
+            - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
+            - Use horizontal rules (---) to separate major sections
+            - Use bullet points for lists of recommendations
+            - Keep paragraphs concise and easy to read
+            - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
+
+            Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
+        """
+        
+        writer({"type": "step", "content": "Generating profile assessment..."})
+        
+        # Stream the profile assessment using LLM
+        async for chunk in self.llm.astream(profile_prompt):
+            if chunk.content:
+                # Emit profile content for custom stream
+                writer({"type": "profile", "content": chunk.content})
+                yield chunk.content
+                
+        # If we have a body type from the analysis, store it in user_profile
+        if body_analysis and "body_type" not in state["user_profile"] or not state["user_profile"]["body_type"]:
+            # Try to extract body_type from the body analysis
+            if "body type:" in body_analysis.lower():
+                body_type_part = body_analysis.lower().split("body type:")[1].strip()
+                body_type = body_type_part.split("\n")[0].strip()
+                state["user_profile"]["body_type"] = body_type
+            elif "somatotype:" in body_analysis.lower():
+                body_type_part = body_analysis.lower().split("somatotype:")[1].strip()
+                body_type = body_type_part.split("\n")[0].strip()
+                state["user_profile"]["body_type"] = body_type
+
+        # Signal completion
+        writer({"type": "step", "content": "Profile assessment completed."})
+
+    async def _call_with_body_analysis(self, state: WorkoutState) -> WorkoutState:
+        """Process state with body analysis using vision model"""
+        # Collect the body analysis tokens from the streaming generator
+        full_body_analysis = ""
+        async for token in self._analyze_body_composition(state["user_profile"]):
+            if token:
+                full_body_analysis += token
+        
+        # Update the state with body analysis
+        if full_body_analysis and len(full_body_analysis) > 50:
+            state["body_analysis"] = full_body_analysis
+        
+            # Extract body type if present
+            if "body type:" in full_body_analysis.lower():
+                body_type_part = full_body_analysis.lower().split("body type:")[1].strip()
+                body_type = body_type_part.split("\n")[0].strip()
+                state["user_profile"]["body_type"] = body_type
+            elif "somatotype:" in full_body_analysis.lower():
+                body_type_part = full_body_analysis.lower().split("somatotype:")[1].strip()
+                body_type = body_type_part.split("\n")[0].strip()
+                state["user_profile"]["body_type"] = body_type
+        
+        # Get previous data if available
+        previous_profile_assessment = None
+        previous_body_analysis = None
+        if state.get("previous_sections"):
+            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
+            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
+        
+        # Create full profile analysis with previous data
+        profile_prompt = f"""
+            [Persona]
+            You are an elite professional fitness coach and nutritionist with expertise in longitudinal fitness tracking. You specialize in creating personalized fitness assessments that track progress over time.
+
+            [Task]
+            Analyze the client's current profile data and body analysis, compare with any previous assessments, and create a comprehensive fitness profile that highlights changes, improvements, and areas needing attention.
+
+            [Context]
+            --- CURRENT CLIENT PROFILE ---
+            {json.dumps(state["user_profile"])}
+
+            --- CURRENT BODY ANALYSIS ---
+            {full_body_analysis if full_body_analysis else "No body analysis available"}
+
+            {f'''--- PREVIOUS ASSESSMENTS ---
+            Previous Profile Assessment:
+            {previous_profile_assessment}
+
+            Previous Body Analysis:
+            {previous_body_analysis}
+            ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
+
+            [Instructions]
+            1. Create a clear, structured assessment with the following sections:
+            - Current fitness status overview
+            - Analysis of body composition and structure 
+            - Alignment between client's goals and current physical state
+            - Realistic timeframes for achieving stated goals
+            - Key focus areas for improvement
+
+            2. {f'''Progress Comparison Analysis:
+            - Compare current measurements/stats with previous assessment
+            - Identify specific improvements in body composition, posture, or muscle development
+            - Quantify changes in weight, muscle mass, and body fat percentage when possible
+            - Highlight areas showing good progress
+            - Identify areas still requiring targeted work
+            - Analyze if progress is aligned with previously stated goals
+            ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
+
+            3. Professional tone:
+            - Be honest but encouraging
+            - Use precise, measurable language
+            - Avoid generic statements; be specific to this client
+            - Balance constructive feedback with positive reinforcement
+
+            4. Formatting guidelines:
+            - Use "## Profile Assessment" as the main section header
             - Use only H3 ("###") headings for subsections
             - NEVER use level 2 headings (##) for any subsection - only for the main section title
             - Format all measurements and calculations in bold (e.g., **Weight: 81kg**)
             - Use horizontal rules (---) to separate major sections
             - Use bullet points for lists of recommendations
             - Keep paragraphs concise and easy to read
-            - Always end your response with "---" (three dashes) as a separator
+            - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
             Format your response as a cohesive professional assessment that the client can use as a roadmap for their fitness journey.
         """
         
         response = await self.llm.ainvoke(profile_prompt)
-        if body_analysis:
-            state["user_profile"]["body_analysis"] = body_analysis
+        if full_body_analysis:
+            state["user_profile"]["body_analysis"] = full_body_analysis
         state["user_profile"] = response.content
         return state
 
@@ -720,6 +730,21 @@ User details:
         # Check if we have body analysis data in the state
         body_analysis = state.get("body_analysis")
     
+        # If we have body photos but no analysis yet, we need to analyze
+        # but _analyze_body_composition is now a streaming generator, 
+        # so we use _call_with_body_analysis as a helper (which is synchronous)
+        if has_body_photos and not body_analysis:
+            # For synchronous contexts, use the helper method
+            import asyncio
+            try:
+                # Use an event loop to run the async method
+                loop = asyncio.get_event_loop()
+                state = loop.run_until_complete(self._call_with_body_analysis(state))
+                body_analysis = state.get("body_analysis")
+            except Exception as e:
+                print(f"Error in synchronous body analysis: {e}")
+                # Continue without body analysis
+        
         # Create profile analysis with or without body analysis
         profile_prompt = f"""
             [Persona]
@@ -777,7 +802,7 @@ User details:
                - Use horizontal rules (---) to separate major sections
                - Use bullet points for lists of recommendations
                - Keep paragraphs concise and easy to read
-               - Always end your response with "---" (three dashes) as a separator
+               - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
             Format your response as a comprehensive professional assessment that the client can use as a roadmap for their fitness journey.
         """
@@ -805,6 +830,12 @@ class DietaryAgent:
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream dietary recommendations"""
+        # Get stream writer for emitting events
+        writer = get_stream_writer()
+        
+        # Emit start step
+        writer({"type": "step", "content": "Starting dietary plan generation..."})
+        
         # Check if we have previous dietary plan and profile
         previous_dietary_plan = None
         previous_user_profile = None
@@ -836,7 +867,7 @@ class DietaryAgent:
             ''' if previous_dietary_plan else '--- NO PREVIOUS DIETARY PLAN AVAILABLE ---'}
 
             [Instructions]
-            1. Begin your response with the heading "## Dietary Plan"
+            1. Always start your response with 2 blank lines, then on a new line the heading "## Dietary Plan".
             
             2. Create a structured meal plan with these components:
             - Daily caloric and macronutrient targets based on client goals
@@ -878,7 +909,7 @@ class DietaryAgent:
             - Format macronutrient information in italics with this exact pattern: _Macros: Approximately 30g protein, 45g carbs, 15g fat_
             - Use horizontal rules (---) to separate major sections
             - Use bullet points for lists of recommendations
-            - Always end your response with "---" (three dashes) as a separator
+            - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
             Format your response as a comprehensive dietary plan that supports the client's fitness journey and can be practically implemented in daily life.
         """
@@ -886,11 +917,20 @@ class DietaryAgent:
         state["dietary_state"].is_streaming = True
         state["dietary_state"].last_update = datetime.now().isoformat()
         
+        # Emit progress update
+        writer({"type": "step", "content": "Analyzing nutritional needs and preferences..."})
+        
+        # Stream the dietary recommendations
         async for chunk in self.llm.astream(diet_prompt):
             if chunk.content:
+                # Emit dietary content for custom stream
+                writer({"type": "dietary", "content": chunk.content})
                 yield chunk.content
         
         state["dietary_state"].is_streaming = False
+        
+        # Signal completion
+        writer({"type": "step", "content": "Dietary plan completed."})
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Generate a dietary plan based on user profile"""
@@ -967,7 +1007,7 @@ class DietaryAgent:
             - Format macronutrient information in italics with this exact pattern: _Macros: Approximately 30g protein, 45g carbs, 15g fat_
             - Use horizontal rules (---) to separate major sections
             - Use bullet points for lists of recommendations
-            - Always end your response with "---" (three dashes) as a separator
+            - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
             Format your response as a comprehensive dietary plan that supports the client's fitness journey and can be practically implemented in daily life.
         """
@@ -988,6 +1028,12 @@ class FitnessAgent:
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream fitness recommendations"""
+        # Get stream writer for emitting events
+        writer = get_stream_writer()
+        
+        # Emit start step
+        writer({"type": "step", "content": "Starting fitness plan generation..."})
+        
         # Check if we have previous fitness plan and profile
         previous_fitness_plan = None
         previous_user_profile = None
@@ -1019,7 +1065,7 @@ class FitnessAgent:
         ''' if previous_fitness_plan else '--- NO PREVIOUS FITNESS PLAN AVAILABLE ---'}
 
         [Instructions]
-        1. Begin your response with the heading "## Fitness Plan"
+        1. Begin your response with 2 blank lines, then on a new line the heading "## Fitness Plan".
         
         2. Create a structured fitness program with these components:
            - Detailed warm-up protocols (10-15 minutes)
@@ -1061,7 +1107,7 @@ class FitnessAgent:
            - Format measurements and calculations in bold: **BMR = 1500 calories/day**
            - Use horizontal rules (---) to separate major sections
            - Include proper spacing between sections for readability
-           - Always end your response with "---" (three dashes) as a separator
+           - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
         Format your response as a comprehensive fitness plan that supports the client's specific goals and can be realistically implemented with their available resources.
         """
@@ -1069,11 +1115,20 @@ class FitnessAgent:
         state["fitness_state"].is_streaming = True
         state["fitness_state"].last_update = datetime.now().isoformat()
         
+        # Emit progress update
+        writer({"type": "step", "content": "Analyzing fitness goals and creating personalized workout plan..."})
+        
+        # Stream the fitness recommendations
         async for chunk in self.llm.astream(fitness_prompt):
             if chunk.content:
+                # Emit fitness content for custom stream
+                writer({"type": "fitness", "content": chunk.content})
                 yield chunk.content
         
         state["fitness_state"].is_streaming = False
+        
+        # Signal completion
+        writer({"type": "step", "content": "Fitness plan completed."})
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Generate a fitness plan based on user profile"""
@@ -1150,7 +1205,7 @@ class FitnessAgent:
            - Format measurements and calculations in bold: **BMR = 1500 calories/day**
            - Use horizontal rules (---) to separate major sections
            - Include proper spacing between sections for readability
-           - Always end your response with "---" (three dashes) as a separator
+           - Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
         Format your response as a comprehensive fitness plan that supports the client's specific goals and can be realistically implemented with their available resources.
         """
@@ -1171,8 +1226,14 @@ class QueryAgent:
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream response to query"""
+        # Get stream writer for emitting events
+        writer = get_stream_writer()
+        
         if not state["current_query"]:
             return
+        
+        # Emit start of query processing
+        writer({"type": "step", "content": f"Processing query: {state['current_query']}"})
         
         # Get previous sections if available
         previous_sections = state.get("previous_sections", {})
@@ -1206,9 +1267,18 @@ class QueryAgent:
         ''' if previous_sections else ''}
         """
         
+        # Emit analyzing step
+        writer({"type": "step", "content": "Analyzing query against your personalized plans..."})
+        
+        # Stream the response
         async for chunk in self.llm.astream(query_prompt):
             if chunk.content:
+                # Emit response content 
+                writer({"type": "response", "content": chunk.content})
                 yield chunk.content
+        
+        # Signal completion
+        writer({"type": "step", "content": "Query processing completed."})
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Handle user queries about their fitness and dietary plans"""
@@ -1269,51 +1339,61 @@ class HeadCoachAgent:
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream comprehensive coaching plan"""
+        # Get stream writer for emitting events
+        writer = get_stream_writer()
+        
         # If complete_response is already generated, stream it directly
         if state.get("complete_response"):
             # Split by sections for more natural streaming
             sections = state["complete_response"].split("\n\n")
             for section in sections:
+                writer({"type": "response", "content": section + "\n\n"})
                 yield section + "\n\n"
             return
         
         # If not already generated, create the structured output with all components
+        writer({"type": "response", "content": "# Your Personalized Fitness Plan\n\n"})
         yield "# Your Personalized Fitness Plan\n\n"
         
         # Add profile assessment (no need to add header, it's in the content)
-        yield state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
+        profile_content = state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
+        writer({"type": "profile", "content": profile_content})
+        yield profile_content
         yield "\n\n"
         
         # Include body analysis if available (no need to add header, it's in the content)
         if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
+            writer({"type": "profile", "content": state["body_analysis"]})
             yield state["body_analysis"]
             yield "\n\n"
         
         # Add dietary plan (no need to add the title since it's in the content)
+        writer({"type": "dietary", "content": state["dietary_state"].content})
         yield state["dietary_state"].content
         yield "\n\n"
         
         # Add fitness plan (no need to add the title since it's in the content)
+        writer({"type": "fitness", "content": state["fitness_state"].content})
         yield state["fitness_state"].content
         yield "\n\n"
 
         # Add progress comparison if available
         if state.get("progress_comparison"):
+            writer({"type": "progress", "content": state["progress_comparison"]})
             yield state["progress_comparison"]
             yield "\n\n"
         
         # Final message
-        yield "---\n\n"
-        yield "Your personalized fitness and dietary plans have been created. You can now ask specific questions about your plans."
-    
-    def compare_responses(self, previous_overview, current_overview, user_profile):
-        """Compare previous and current fitness overviews to identify progress"""
+        final_message = "---\n\nYour personalized fitness and dietary plans have been created. You can now ask specific questions about your plans."
+        writer({"type": "response", "content": final_message})
+        yield final_message
+
+    async def compare_responses(self, previous_overview, current_overview, user_profile):
+        """Compare previous and current fitness overviews to identify progress, streaming token by token."""
         if not previous_overview or not current_overview:
-            print("\n\n==========================================")
-            print("No previous or current overview to compare")
-            print("==========================================\n\n")
-            return "This is your first fitness assessment. Future assessments will include progress tracking."
-            
+            yield "## Progress Tracking\n\n"
+            yield "This is your first fitness assessment. Future assessments will include progress tracking."
+            return
         comparison_prompt = f"""
         [Persona]
         You are an elite fitness coach who specializes in analyzing client progress over time. You have exceptional abilities in recognizing changes in fitness metrics, body composition, dietary habits, and workout performance.
@@ -1333,7 +1413,7 @@ class HeadCoachAgent:
 
         [Instructions]
         
-        1. Begin your response with the heading "## Progress Tracking"
+        1. Always start your response with 2 blank lines, then on a new line the heading "## Progress Tracking".
 
         2. Compare these specific aspects between the two assessments:
            - Body metrics (weight, BMI, body fat percentage)
@@ -1368,21 +1448,17 @@ class HeadCoachAgent:
 
         Format your response as an insightful progress analysis that motivates the client while providing an honest assessment of their fitness journey.
         """
-        
         print("\n\n==========================================")
         print(f"Generating progress comparison")
         print(f"Previous overview length: {len(previous_overview)}")
         print(f"Current overview length: {len(current_overview)}")
         print("==========================================\n\n")
-        
-        # Use the LLM to generate the comparison
-        response = self.llm.invoke(comparison_prompt)
-        
+        async for chunk in self.llm.astream(comparison_prompt):
+            if chunk.content:
+                yield chunk.content
         print("\n\n==========================================")
-        print(f"Completed progress comparison. Result length: {len(response.content)}")
+        print(f"Completed progress comparison streaming.")
         print("==========================================\n\n")
-        
-        return response.content
     
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Produce the final structured output with all components"""

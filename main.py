@@ -913,6 +913,131 @@ async def create_fitness_profile(profile: FitnessProfileRequest):
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api.post("/fitness/profile/stream")
+async def stream_fitness_profile(profile: FitnessProfileRequest):
+    """Create a new fitness coaching session with user profile with real-time streaming"""
+    try:
+        # Convert the request to a dict, keeping thread_id and user_id
+        user_profile = profile.model_dump()
+        
+        # Use user_id from the profile or generate a new one if not provided
+        user_id = profile.user_id or str(uuid.uuid4())
+        user_profile["user_id"] = user_id
+        
+        # Use thread_id from the profile or generate a new one if not provided
+        thread_id = profile.thread_id or str(uuid.uuid4())
+        
+        # Create initial state
+        initial_state = get_initial_state(user_profile=user_profile, thread_id=thread_id, user_id=user_id)
+        
+        # Store the original user_profile dictionary
+        original_user_profile = user_profile.copy()
+        initial_state["original_user_profile"] = original_user_profile
+        
+        # Check if we have body photos to analyze
+        has_body_photos = False
+        if isinstance(user_profile, dict):
+            has_body_photos = "imagePaths" in user_profile and any(user_profile.get("imagePaths", {}).values())
+        
+        # Define the streaming response function
+        async def generate_sse_stream():
+            # Process body analysis and stream it if photos are available
+            if has_body_photos:
+                # Use the ProfileAgent for body analysis
+                from graph.nodes.fitness_coach import ProfileAgent
+                profile_agent = ProfileAgent()
+                
+                try:
+                    # Stream body analysis tokens directly as they're generated
+                    body_analysis = ""
+                    token_count = 0
+                    
+                    # Log that we're starting the body analysis
+                    logging.info(f"Starting body analysis streaming for user {user_id}")
+                    
+                    # Stream directly from the body analysis generator
+                    async for token in profile_agent._analyze_body_composition(initial_state["user_profile"]):
+                        if token:
+                            body_analysis += token
+                            token_count += 1
+                            
+                            # Stream each token immediately to the client
+                            yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
+                            
+                            # Force flush for better real-time streaming
+                            if token_count % 5 == 0:  # Every 5 tokens
+                                yield f":\n\n"  # Empty comment forces flush
+                    
+                    logging.info(f"Body analysis streaming complete: {token_count} tokens, {len(body_analysis)} chars")
+                    
+                    # Store the complete analysis in state for later use
+                    if body_analysis and len(body_analysis) > 50:
+                        initial_state["body_analysis"] = body_analysis
+                        
+                        # Store image timestamps if available
+                        if "image_timestamps" in initial_state["user_profile"]:
+                            initial_state["image_timestamps"] = initial_state["user_profile"]["image_timestamps"]
+                except Exception as e:
+                    logging.error(f"Error during body analysis: {str(e)}")
+                    logging.error(f"Traceback: {traceback.format_exc()}")
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Error analyzing body photos: {str(e)}'})}\n\n"
+            
+            # Stream the rest of the response
+            try:
+                # Use LangGraph's native streaming capabilities through our stream_response function
+                logging.info(f"Starting LangGraph stream_response for user {user_id}")
+                
+                # --- SIMPLIFIED: Just yield from stream_response, which now handles progress ---
+                async for chunk in stream_response(initial_state):
+                    if chunk:
+                        yield chunk
+                # Send completion signal
+                yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+            except Exception as e:
+                logging.error(f"Error streaming profile: {str(e)}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
+                # Send error message
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            finally:
+                # Signal end of stream
+                yield "data: [DONE]\n\n"
+                
+                # Store the completed session in active_sessions
+                try:
+                    # Get final state
+                    config = {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_id": f"session_{thread_id}"
+                        }
+                    }
+                    final_state = await app.aget_state(config=config)
+                    
+                    if isinstance(final_state, dict) and "user_id" in final_state:
+                        # Store in active sessions for future queries
+                        active_sessions[thread_id] = final_state
+                        logging.info(f"Stored completed session in active_sessions for thread {thread_id}")
+                except Exception as e:
+                    logging.error(f"Error retrieving final state: {str(e)}")
+        
+        # Return streaming response
+        logging.info(f"Starting streaming response for fitness profile: user_id={user_id}, thread_id={thread_id}")
+        return StreamingResponse(
+            generate_sse_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+                "Transfer-Encoding": "chunked"
+            }
+        )
+    
+    except Exception as e:
+        logging.error(f"Error in stream_fitness_profile: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api.post("/fitness/query")
 async def process_fitness_query(query: FitnessQueryRequest):
     """Process a query in the fitness coaching session with streaming response"""

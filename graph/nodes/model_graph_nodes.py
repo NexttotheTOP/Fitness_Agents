@@ -1164,7 +1164,12 @@ async def responder_node(
         conversation_messages.append(HumanMessage(content=messages_history[-1]["content"]))
 
     # Create full prompt chain with conversation history
-    prompt_chain = [system_prompt] + conversation_messages
+    prompt_chain = [
+        system_prompt,
+        SystemMessage(content="Start of the conversation history"),
+        *conversation_messages,
+        SystemMessage(content="End of the conversation history")
+    ]
     
     
     try:
