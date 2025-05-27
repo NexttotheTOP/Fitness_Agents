@@ -18,7 +18,7 @@ load_dotenv()
 from graph.graph import app as qa_app
 from graph.workout_graph import app as workout_app, initialize_workout_state
 from graph.workout_state import Workout, UserProfile, WorkoutState, AgentState, QueryType
-from graph.fitness_coach_graph import get_initial_state, process_query, stream_response, app 
+from graph.fitness_coach_graph import get_initial_state, process_query, stream_response, app as fitness_coach_app
 from fastapi.middleware.cors import CORSMiddleware
 from graph.chains.workout_variation import analyze_workout
 # Import shared state module
@@ -35,6 +35,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # Add 3D model API imports
 from graph.model_graph import model_graph
+from graph.memory_store import get_previous_profile_overviews
 
 # Create FastAPI app
 api = FastAPI(title="Fitness Coach API")
@@ -885,7 +886,7 @@ async def create_fitness_profile(profile: FitnessProfileRequest):
         else:
             # If not in active_sessions (shouldn't happen but just in case)
             logging.info("State not found in active_sessions, processing directly")
-            result_state = app.invoke(initial_state, config=config)
+            result_state = fitness_coach_app.invoke(initial_state, config=config)
             from graph.nodes.fitness_coach import HeadCoachAgent
             head_coach = HeadCoachAgent()
             formatted_state = head_coach(result_state)
@@ -1011,7 +1012,7 @@ async def stream_fitness_profile(profile: FitnessProfileRequest):
                             "checkpoint_id": f"session_{thread_id}"
                         }
                     }
-                    final_state = await app.aget_state(config=config)
+                    final_state = await fitness_coach_app.aget_state(config=config)
                     
                     if isinstance(final_state, dict) and "user_id" in final_state:
                         # Store in active sessions for future queries
@@ -1044,56 +1045,61 @@ async def process_fitness_query(query: FitnessQueryRequest):
     try:
         thread_id = query.thread_id
         user_id = query.user_id
-        
+
+        # Helper to load session from persistent storage
+        def load_session_from_db(thread_id, user_id):
+            # Try to get the most recent overview for this user and thread
+            overviews = get_previous_profile_overviews(user_id, limit=10)
+            for overview in overviews:
+                print(f"Overview: {overview}")
+                if overview.get("id") == thread_id:
+                    # Reconstruct a minimal session state from the overview
+                    # You may want to expand this to include more fields as needed
+                    state = {
+                        "user_id": user_id,
+                        "thread_id": thread_id,
+                        "user_profile": {},
+                        "dietary_state": {"content": "", "last_update": "", "is_streaming": False},
+                        "fitness_state": {"content": "", "last_update": "", "is_streaming": False},
+                        "current_query": query.query,
+                        "query_type": "GENERAL",
+                        "conversation_history": [],
+                        "original_workout": None,
+                        "variations": [],
+                        "analysis": {},
+                        "generation": None,
+                        "body_analysis": None,
+                        "complete_response": overview.get("content", ""),
+                        "previous_complete_response": None,
+                        "previous_sections": None
+                    }
+                    print(f"Loaded session from DB: {state}")
+                    return state
+                    
+            return None
+
         if thread_id not in active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
+            # Try to load from persistent storage
+            session_state = load_session_from_db(thread_id, user_id)
+            if session_state is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+            active_sessions[thread_id] = session_state
+
         # Get current session state
         current_state = active_sessions[thread_id]
-        
+
         # Ensure user_id matches
         if current_state.get("user_id") != user_id:
             raise HTTPException(status_code=403, detail="User ID does not match session")
-        
-        # Enhance with RAG if available
-        if rag_system and query.query:
-            try:
-                # Get relevant information from RAG system
-                rag_result = rag_system({"query": query.query})
-                
-                # Add RAG results to state for context
-                if "source_documents" in rag_result:
-                    current_state["rag_context"] = [
-                        {
-                            "content": doc.page_content,
-                            "metadata": doc.metadata,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        for doc in rag_result["source_documents"]
-                    ]
-                    
-                # Log retrieved contexts
-                logging.info(f"RAG retrieved {len(current_state.get('rag_context', []))} documents for query: {query.query}")
-            except Exception as e:
-                logging.error(f"Error using RAG system: {str(e)}")
-        
-        # Process the query using our simplified query handler
-        updated_state = process_query(current_state, query.query)
-        
-        # Update the active session
-        active_sessions[thread_id] = updated_state
-        
-        # Get the response directly from the conversation history
-        if updated_state["conversation_history"]:
-            response = updated_state["conversation_history"][-1]["content"]
-            return {"content": response, "user_id": user_id, "thread_id": thread_id}
-        
+
         # If no history updated, return streaming response as fallback
+        logging.info(f"Thread {thread_id} - User {user_id} - complete_response length: {len(current_state.get('complete_response', '') or '')}")
+        logging.info(f"Thread {thread_id} - User {user_id} - complete_response preview: {repr((current_state.get('complete_response', '') or '')[:500])}")
         return StreamingResponse(
-            generate_response_stream(current_state, query.query),
+            process_query(current_state, query.query),
             media_type="text/event-stream"
         )
-    
+
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -1406,7 +1412,6 @@ async def model_token_stream(
                         print(f"[HTTP] Custom stream token #{token_count}: '{token}'")
                         yield f"event: token\ndata: {json.dumps({'content': token})}\n\n"
                         yield ":\n\n"  # Force flush
-                        await asyncio.sleep(0)
                     
                     elif chunk.get("type") == "thinking":
                         yield f"event: thinking\ndata: {json.dumps({'content': chunk.get('content', '')})}\n\n"

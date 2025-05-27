@@ -9,12 +9,13 @@ import traceback
 
 from graph.workout_state import WorkoutState, AgentState, QueryType
 from graph.nodes.fitness_coach import ProfileAgent, DietaryAgent, FitnessAgent, QueryAgent, HeadCoachAgent
-from graph.memory_store import get_postgres_checkpointer, store_profile_overview, get_most_recent_profile_overview, setup_fitness_tables, get_structured_previous_overview
+from graph.memory_store import get_postgres_checkpointer, store_profile_overview, get_most_recent_profile_overview, get_structured_previous_overview
+from graph.nodes.fitness_coach import HeadCoachAgent
 
 # Initialize the PostgreSQL connection pool and checkpointer
 try:
     postgres_checkpointer = get_postgres_checkpointer()
-    setup_fitness_tables()  # Setup tables if they don't exist
+    #setup_fitness_tables()  # Setup tables if they don't exist
     logging.info("PostgreSQL checkpointer and fitness tables initialized successfully")
 except Exception as e:
     logging.error(f"Error initializing PostgreSQL: {str(e)}")
@@ -31,7 +32,7 @@ def create_fitness_coach_workflow():
     workflow.add_node("profile", ProfileAgent())
     workflow.add_node("dietary", DietaryAgent())
     workflow.add_node("fitness", FitnessAgent())
-    workflow.add_node("query", QueryAgent())
+    #workflow.add_node("query", QueryAgent())
     
     # Create simple linear flow for profile creation
     workflow.add_edge("profile", "dietary")
@@ -75,7 +76,7 @@ def get_initial_state(user_profile: dict = None, thread_id: str = None, user_id:
         
         if previous_data:
             # Store the complete previous response
-            previous_complete_response = previous_data.get("response")
+            previous_complete_response = previous_data.get("content")
             
             # Store the parsed sections
             previous_sections = parsed_sections
@@ -126,125 +127,117 @@ def get_initial_state(user_profile: dict = None, thread_id: str = None, user_id:
 
 async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterable[str]:
     """Stream responses from the appropriate agents, and at the end stream the progress tracking section."""
-    if query:
-        # Query mode - use query agent directly
-        state["current_query"] = query
-        query_agent = QueryAgent()
-        # Stream response through query agent
-        async for chunk in query_agent.stream(state):
-            if chunk:
-                yield chunk
-    else:
-        config = {
-            "configurable": {
-                "thread_id": state["thread_id"],
-                "checkpoint_id": f"session_{state['thread_id']}"
-            }
-        }
-        try:
-            final_content = {
-                "profile_assessment": "",
-                "body_analysis": state.get("body_analysis", ""),
-                "dietary_plan": "",
-                "fitness_plan": "",
-                "progress_tracking": "",
-                "complete_response": ""
-            }
-            # --- NEW: Accumulate the full streamed overview ---
-            streamed_overview = ""
-            # Stream through each node in the graph
-            async for chunk_type, chunk in app.astream(
-                state, 
-                stream_mode=["updates", "custom", "messages"],
-                config=config
-            ):
-                if chunk_type == "custom" and isinstance(chunk, dict):
-                    if "type" in chunk and "content" in chunk:
-                        if chunk["type"] == "profile":
-                            final_content["profile_assessment"] += chunk["content"]
-                            streamed_overview += chunk["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
-                        elif chunk["type"] == "dietary":
-                            if not hasattr(stream_response, '_yielded_dietary_newline'):
-                                yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
-                                stream_response._yielded_dietary_newline = True
-                            final_content["dietary_plan"] += chunk["content"]
-                            streamed_overview += chunk["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
-                        elif chunk["type"] == "fitness":
-                            if not hasattr(stream_response, '_yielded_fitness_newline'):
-                                yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
-                                stream_response._yielded_fitness_newline = True
-                            final_content["fitness_plan"] += chunk["content"]
-                            streamed_overview += chunk["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
-                        elif chunk["type"] == "progress":
-                            final_content["progress_tracking"] += chunk["content"]
-                            streamed_overview += chunk["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
-                        elif chunk["type"] == "response":
-                            streamed_overview += chunk["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
-                        elif chunk["type"] == "step":
-                            logging.info(f"Step: {chunk['content']}")
-                elif chunk_type == "updates" and isinstance(chunk, dict):
-                    if "node" in chunk:
-                        node_name = chunk.get("node")
-                        logging.info(f"Completed node: {node_name}")
-                        if "return_values" in chunk and isinstance(chunk["return_values"], dict):
-                            if node_name == "profile" and "user_profile" in chunk["return_values"]:
-                                profile_content = chunk["return_values"]["user_profile"]
-                                if isinstance(profile_content, str) and profile_content.strip():
-                                    final_content["profile_assessment"] = profile_content
-                                    streamed_overview += profile_content
-                                    yield f"data: {json.dumps({'type': 'content', 'content': profile_content})}\n\n"
-                            if node_name == "dietary" and "dietary_state" in chunk["return_values"]:
-                                dietary_state = chunk["return_values"]["dietary_state"]
-                                if hasattr(dietary_state, "content") and dietary_state.content.strip():
-                                    final_content["dietary_plan"] = dietary_state.content
-                                    streamed_overview += dietary_state.content
-                                    yield f"data: {json.dumps({'type': 'content', 'content':  dietary_state.content})}\n\n"
-                            if node_name == "fitness" and "fitness_state" in chunk["return_values"]:
-                                fitness_state = chunk["return_values"]["fitness_state"]
-                                if hasattr(fitness_state, "content") and fitness_state.content.strip():
-                                    final_content["fitness_plan"] = fitness_state.content
-                                    streamed_overview += fitness_state.content
-                                    yield f"data: {json.dumps({'type': 'content', 'content': fitness_state.content})}\n\n"
-                elif chunk_type == "messages":
-                    message_chunk, metadata = chunk
-                    token = None
-                    if hasattr(message_chunk, "content"):
-                        token = message_chunk.content
-                    elif isinstance(message_chunk, str):
-                        token = message_chunk
-                    if token:
-                        node_name = metadata.get("langgraph_node") if metadata else None
-                        if node_name == "profile":
-                            final_content["profile_assessment"] += token
-                        elif node_name == "dietary":
-                            final_content["dietary_plan"] += token
-                        elif node_name == "fitness":
-                            final_content["fitness_plan"] += token
-                        streamed_overview += token
-                        yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
-            # --- END NEW ---
-            # After all main content is streamed, stream the progress tracking section
-            from graph.nodes.fitness_coach import HeadCoachAgent
-            head_coach = HeadCoachAgent()
-            previous_overview = state.get("previous_complete_response", "")
-            yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
-            async for token in head_coach.compare_responses(previous_overview, streamed_overview, state["user_profile"]):
-                if token:
-                    yield f"data: {json.dumps({'type': 'progress', 'content': token})}\n\n"
-        except Exception as e:
-            logging.error(f"Error during streaming: {str(e)}")
-            logging.error(traceback.format_exc())
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-        finally:
-            yield "data: [DONE]\n\n"
 
-def process_query(state: WorkoutState, query: str, config: dict = None) -> WorkoutState:
-    """Process a user query using the existing thread"""
+    config = {
+        "configurable": {
+            "thread_id": state["thread_id"],
+            "checkpoint_id": f"session_{state['thread_id']}"
+        }
+    }
+    try:
+        final_content = {
+            "profile_assessment": "",
+            "body_analysis": state.get("body_analysis", ""),
+            "dietary_plan": "",
+            "fitness_plan": "",
+            "progress_tracking": "",
+            "complete_response": ""
+        }
+        # --- NEW: Accumulate the full streamed overview ---
+        streamed_overview = ""
+        # Stream through each node in the graph
+        async for chunk_type, chunk in app.astream(
+            state, 
+            stream_mode=["updates", "custom", "messages"],
+            config=config
+        ):
+            if chunk_type == "custom" and isinstance(chunk, dict):
+                if "type" in chunk and "content" in chunk:
+                    if chunk["type"] == "profile":
+                        final_content["profile_assessment"] += chunk["content"]
+                        streamed_overview += chunk["content"]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
+                    elif chunk["type"] == "dietary":
+                        if not hasattr(stream_response, '_yielded_dietary_newline'):
+                            yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
+                            stream_response._yielded_dietary_newline = True
+                        final_content["dietary_plan"] += chunk["content"]
+                        streamed_overview += chunk["content"]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
+                    elif chunk["type"] == "fitness":
+                        if not hasattr(stream_response, '_yielded_fitness_newline'):
+                            yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
+                            stream_response._yielded_fitness_newline = True
+                        final_content["fitness_plan"] += chunk["content"]
+                        streamed_overview += chunk["content"]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
+                    elif chunk["type"] == "progress":
+                        final_content["progress_tracking"] += chunk["content"]
+                        streamed_overview += chunk["content"]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
+                    elif chunk["type"] == "response":
+                        streamed_overview += chunk["content"]
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']})}\n\n"
+                    elif chunk["type"] == "step":
+                        logging.info(f"Step: {chunk['content']}")
+            elif chunk_type == "updates" and isinstance(chunk, dict):
+                if "node" in chunk:
+                    node_name = chunk.get("node")
+                    logging.info(f"Completed node: {node_name}")
+                    if "return_values" in chunk and isinstance(chunk["return_values"], dict):
+                        if node_name == "profile" and "user_profile" in chunk["return_values"]:
+                            profile_content = chunk["return_values"]["user_profile"]
+                            if isinstance(profile_content, str) and profile_content.strip():
+                                final_content["profile_assessment"] = profile_content
+                                streamed_overview += profile_content
+                                yield f"data: {json.dumps({'type': 'content', 'content': profile_content})}\n\n"
+                        if node_name == "dietary" and "dietary_state" in chunk["return_values"]:
+                            dietary_state = chunk["return_values"]["dietary_state"]
+                            if hasattr(dietary_state, "content") and dietary_state.content.strip():
+                                final_content["dietary_plan"] = dietary_state.content
+                                streamed_overview += dietary_state.content
+                                yield f"data: {json.dumps({'type': 'content', 'content':  dietary_state.content})}\n\n"
+                        if node_name == "fitness" and "fitness_state" in chunk["return_values"]:
+                            fitness_state = chunk["return_values"]["fitness_state"]
+                            if hasattr(fitness_state, "content") and fitness_state.content.strip():
+                                final_content["fitness_plan"] = fitness_state.content
+                                streamed_overview += fitness_state.content
+                                yield f"data: {json.dumps({'type': 'content', 'content': fitness_state.content})}\n\n"
+            elif chunk_type == "messages":
+                message_chunk, metadata = chunk
+                token = None
+                if hasattr(message_chunk, "content"):
+                    token = message_chunk.content
+                elif isinstance(message_chunk, str):
+                    token = message_chunk
+                if token:
+                    node_name = metadata.get("langgraph_node") if metadata else None
+                    if node_name == "profile":
+                        final_content["profile_assessment"] += token
+                    elif node_name == "dietary":
+                        final_content["dietary_plan"] += token
+                    elif node_name == "fitness":
+                        final_content["fitness_plan"] += token
+                    streamed_overview += token
+                    yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
+        # --- END NEW ---
+        # After all main content is streamed, stream the progress tracking section
+        store_profile_overview(state["user_id"], state["thread_id"], streamed_overview)   # metadata nog chekken !!! 
+        head_coach = HeadCoachAgent()
+        previous_overview = state.get("previous_complete_response", "")
+        yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
+        async for token in head_coach.compare_responses(previous_overview, streamed_overview, state["user_profile"]):
+            if token:
+                yield f"data: {json.dumps({'type': 'progress', 'content': token})}\n\n"
+    except Exception as e:
+        logging.error(f"Error during streaming: {str(e)}")
+        logging.error(traceback.format_exc())
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
+
+async def process_query(state: WorkoutState, query: str) -> AsyncIterable[str]:
+    """Process a user query using the existing thread, stream-mode"""
     # Create a new state with the existing data plus the query
     query_state = WorkoutState(
         user_id=state["user_id"],
@@ -265,18 +258,18 @@ def process_query(state: WorkoutState, query: str, config: dict = None) -> Worko
         previous_sections=state.get("previous_sections")
     )
     
-    if config is None:
-        config = {
-            "configurable": {
-                "thread_id": state["thread_id"],
-                "checkpoint_id": f"session_{state['thread_id']}"
-            }
-        }
+    # if config is None:
+    #     config = {
+    #         "configurable": {
+    #             "thread_id": state["thread_id"],
+    #             "checkpoint_id": f"session_{state['thread_id']}"
+    #         }
+    #     }
+
     
     # Just use the QueryAgent directly instead of going through the graph
     query_agent = QueryAgent()
-    result = query_agent(query_state)
-    
-    # Update the session state with the results
-    state.update(result)
-    return state 
+    async for chunk in query_agent.stream(query_state):
+            if chunk:
+                yield f"data: {json.dumps({'type': 'response', 'content': chunk})}\n\n"
+    yield "data: [DONE]\n\n"

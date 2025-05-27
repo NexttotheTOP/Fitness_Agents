@@ -45,39 +45,39 @@ def get_postgres_checkpointer():
         print(traceback.format_exc())
         raise
 
-def setup_fitness_tables():
-    """Create the profile_overview_generations table if it doesn't exist."""
-    try:
-        print("\n\n==========================================")
-        print("Setting up fitness tables")
-        
-        supabase = get_supabase_client()
-        
-        try:
-            # First check if the table exists by running a query
-            test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
-            print(f"Table exists check: {test_result}")
-            print("Table profile_overview_generations exists")
-        except Exception as e:
-            print(f"Error querying table: {str(e)}")
-            print("Table may not exist, attempting table creation via SQL...")
-            
-        
-        # Run a comprehensive test of Supabase connectivity and table operations
-        test_result = test_supabase_connection_and_table()
-        if test_result:
-            print("Supabase connection and table setup validated successfully")
-        else:
-            print("Supabase connection or table setup has issues - check logs")
-        
-        print("==========================================\n\n")
-    except Exception as e:
-        print("\n\n==========================================")
-        print(f"Error setting up fitness tables: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        print("==========================================\n\n")
-        raise
+# def setup_fitness_tables():
+#     """Create the profile_overview_generations table if it doesn't exist."""
+#     try:
+#         print("\n\n==========================================")
+#         print("Setting up fitness tables")
+#         
+#         supabase = get_supabase_client()
+#         
+#         try:
+#             # First check if the table exists by running a query
+#             test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
+#             print(f"Table exists check: {test_result}")
+#             print("Table profile_overview_generations exists")
+#         except Exception as e:
+#             print(f"Error querying table: {str(e)}")
+#             print("Table may not exist, attempting table creation via SQL...")
+#             
+#         
+#         # Run a comprehensive test of Supabase connectivity and table operations
+#         test_result = test_supabase_connection_and_table()
+#         if test_result:
+#             print("Supabase connection and table setup validated successfully")
+#         else:
+#             print("Supabase connection or table setup has issues - check logs")
+#         
+#         print("==========================================\n\n")
+#     except Exception as e:
+#         print("\n\n==========================================")
+#         print(f"Error setting up fitness tables: {str(e)}")
+#         import traceback
+#         print(f"Traceback: {traceback.format_exc()}")
+#         print("==========================================\n\n")
+#         raise
 
 def store_profile_overview(user_id: str, thread_id: str, complete_overview: str, metadata: Dict[str, Any] = None):
     """Store a complete fitness profile overview in Supabase.
@@ -108,16 +108,16 @@ def store_profile_overview(user_id: str, thread_id: str, complete_overview: str,
         }
         
         # Print detailed information about the insert operation
-        print(f"Inserting data into table 'profile_overview_generations'")
+        print(f"Inserting data into table 'fitness_profile_generations'")
         print(f"Data structure: {', '.join(data.keys())}")
         
         # Debug: Check if the table exists
-        try:
-            # Try a simple query first
-            test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
-            print(f"Table exists check: {test_result}")
-        except Exception as table_e:
-            print(f"Error checking table: {str(table_e)}")
+        # try:
+        #     # Try a simple query first
+        #     test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
+        #     print(f"Table exists check: {test_result}")
+        # except Exception as table_e:
+        #     print(f"Error checking table: {str(table_e)}")
         
         # Perform the insert
         result = supabase.table("profile_overview_generations").insert(data).execute()
@@ -145,17 +145,17 @@ def get_previous_profile_overviews(user_id: str, limit: int = 5) -> List[Dict[st
         supabase = get_supabase_client()
         print(f"Successfully connected to Supabase for retrieval")
         
-        # Debug: Check if the table exists
-        try:
-            # Try a simple query first
-            test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
-            print(f"Table exists check: {test_result}")
-        except Exception as table_e:
-            print(f"Error checking table: {str(table_e)}")
-            raise
+        # # Debug: Check if the table exists
+        # try:
+        #     # Try a simple query first
+        #     test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
+        #     print(f"Table exists check: {test_result}")
+        # except Exception as table_e:
+        #     print(f"Error checking table: {str(table_e)}")
+        #     raise
         
         # Perform the query
-        result = supabase.table("profile_overview_generations") \
+        result = supabase.table("fitness_profile_generations") \
             .select("*") \
             .eq("user_id", user_id) \
             .order("timestamp", desc=True) \
@@ -165,7 +165,7 @@ def get_previous_profile_overviews(user_id: str, limit: int = 5) -> List[Dict[st
         print(f"Query executed. Found {len(result.data)} results for user {user_id}")
         if result.data:
             for i, item in enumerate(result.data):
-                print(f"Result {i+1}: thread_id={item.get('thread_id')}, timestamp={item.get('timestamp')}")
+                print(f"Result {i+1}: thread_id={item.get('id')}, timestamp={item.get('timestamp')}")
         else:
             print(f"No results found for user {user_id} in table profile_overview_generations")
         
@@ -193,9 +193,9 @@ def get_most_recent_profile_overview(user_id: str) -> Optional[Dict[str, Any]]:
     if result:
         print(f"\n\n==========================================")
         print(f"Found most recent profile overview for user {user_id}")
-        print(f"Thread ID: {result.get('thread_id')}")
+        print(f"Thread ID: {result.get('id')}")
         print(f"Timestamp: {result.get('timestamp')}")
-        print(f"Response length: {len(result.get('response', ''))}")
+        print(f"Response length: {len(result.get('content', ''))}")
         print(f"==========================================\n\n")
     else:
         print(f"\n\n==========================================")
@@ -304,12 +304,12 @@ def get_structured_previous_overview(user_id: str) -> Tuple[Optional[Dict[str, A
         # Get most recent overview
         previous_data = get_most_recent_profile_overview(user_id)
         
-        if not previous_data or "response" not in previous_data:
+        if not previous_data or "content" not in previous_data:
             print(f"No previous overview found for user {user_id}")
             return None, None
         
         # Parse the overview text into sections
-        previous_overview_text = previous_data.get("response", "")
+        previous_overview_text = previous_data.get("content", "")
         parsed_sections = parse_profile_overview(previous_overview_text)
         
         print("\n\n==========================================")
@@ -329,82 +329,82 @@ def get_structured_previous_overview(user_id: str) -> Tuple[Optional[Dict[str, A
         print("==========================================\n\n")
         return None, None
 
-def test_supabase_connection_and_table():
-    """Test if we can connect to Supabase and the profile_overview_generations table exists and is writable."""
-    try:
-        print("\n\n==========================================")
-        print("Testing Supabase connection and table access")
-        
-        # Get client
-        supabase = get_supabase_client()
-        print("Successfully connected to Supabase")
-        
-        # Test table existence
-        try:
-            test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
-            print(f"Table exists check: {test_result}")
-        except Exception as table_e:
-            print(f"Error checking table: {str(table_e)}")
-            print("The table profile_overview_generations may not exist. Try to create it.")
-            
-            # Attempt to create table (only if Supabase API supports it)
-            try:
-                print("Attempting to create table via REST API (this may fail if not supported)")
-                # This may not work depending on your Supabase setup
-                # Usually tables should be created via migrations or the Supabase Studio
-                result = supabase.rpc("create_profile_overview_table").execute()
-                print(f"Table creation result: {result}")
-            except Exception as create_e:
-                print(f"Error creating table: {str(create_e)}")
-                print("Please create the table manually in Supabase Studio with these columns:")
-                print("- id: uuid (primary key)")
-                print("- user_id: text")
-                print("- thread_id: text")
-                print("- response: text")
-                print("- timestamp: timestamp with time zone")
-                print("- metadata: jsonb")
-        
-        # Try inserting a test record
-        try:
-            test_data = {
-                "user_id": "test_user",
-                "thread_id": "test_thread",
-                "response": "This is a test response",
-                "timestamp": datetime.now().isoformat(),
-                "metadata": {"test": True}
-            }
-            
-            print(f"Attempting to insert test data: {test_data}")
-            result = supabase.table("profile_overview_generations").insert(test_data).execute()
-            print(f"Test insert result: {result}")
-            print("Test insert successful!")
-            
-            # Try to retrieve the test record
-            retrieve_result = supabase.table("profile_overview_generations").select("*").eq("user_id", "test_user").limit(1).execute()
-            if retrieve_result.data:
-                print(f"Successfully retrieved test data: {retrieve_result.data}")
-            else:
-                print("Failed to retrieve test data even though insert was successful")
-                
-        except Exception as insert_e:
-            print(f"Error inserting test data: {str(insert_e)}")
-            print("The table may exist but you might not have permission to insert data")
-        
-        print("==========================================\n\n")
-        return True
-    except Exception as e:
-        print(f"\n\n==========================================")
-        print(f"Overall test failed: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        print(f"==========================================\n\n")
-        return False
+# def test_supabase_connection_and_table():
+#     """Test if we can connect to Supabase and the profile_overview_generations table exists and is writable."""
+#     try:
+#         print("\n\n==========================================")
+#         print("Testing Supabase connection and table access")
+#         
+#         # Get client
+#         supabase = get_supabase_client()
+#         print("Successfully connected to Supabase")
+#         
+#         # Test table existence
+#         try:
+#             test_result = supabase.table("profile_overview_generations").select("count").limit(1).execute()
+#             print(f"Table exists check: {test_result}")
+#         except Exception as table_e:
+#             print(f"Error checking table: {str(table_e)}")
+#             print("The table profile_overview_generations may not exist. Try to create it.")
+#             
+#             # Attempt to create table (only if Supabase API supports it)
+#             try:
+#                 print("Attempting to create table via REST API (this may fail if not supported)")
+#                 # This may not work depending on your Supabase setup
+#                 # Usually tables should be created via migrations or the Supabase Studio
+#                 result = supabase.rpc("create_profile_overview_table").execute()
+#                 print(f"Table creation result: {result}")
+#             except Exception as create_e:
+#                 print(f"Error creating table: {str(create_e)}")
+#                 print("Please create the table manually in Supabase Studio with these columns:")
+#                 print("- id: uuid (primary key)")
+#                 print("- user_id: text")
+#                 print("- thread_id: text")
+#                 print("- response: text")
+#                 print("- timestamp: timestamp with time zone")
+#                 print("- metadata: jsonb")
+#         
+#         # Try inserting a test record
+#         try:
+#             test_data = {
+#                 "user_id": "test_user",
+#                 "thread_id": "test_thread",
+#                 "response": "This is a test response",
+#                 "timestamp": datetime.now().isoformat(),
+#                 "metadata": {"test": True}
+#             }
+#             
+#             print(f"Attempting to insert test data: {test_data}")
+#             result = supabase.table("profile_overview_generations").insert(test_data).execute()
+#             print(f"Test insert result: {result}")
+#             print("Test insert successful!")
+#             
+#             # Try to retrieve the test record
+#             retrieve_result = supabase.table("profile_overview_generations").select("*").eq("user_id", "test_user").limit(1).execute()
+#             if retrieve_result.data:
+#                 print(f"Successfully retrieved test data: {retrieve_result.data}")
+#             else:
+#                 print("Failed to retrieve test data even though insert was successful")
+#                 
+#         except Exception as insert_e:
+#             print(f"Error inserting test data: {str(insert_e)}")
+#             print("The table may exist but you might not have permission to insert data")
+#         
+#         print("==========================================\n\n")
+#         return True
+#     except Exception as e:
+#         print(f"\n\n==========================================")
+#         print(f"Overall test failed: {str(e)}")
+#         import traceback
+#         print(f"Traceback: {traceback.format_exc()}")
+#         print(f"==========================================\n\n")
+#         return False
 
-# Replace direct PostgreSQL connections with Supabase client
-def get_db_connection():
-    # Simply return the Supabase client for database operations
-    return get_supabase_client()
+# # Replace direct PostgreSQL connections with Supabase client
+# def get_db_connection():
+#     # Simply return the Supabase client for database operations
+#     return get_supabase_client()
 
-def release_db_connection(conn):
-    # No need to release anything since the Supabase client manages its own connections
-    pass 
+# def release_db_connection(conn):
+#     # No need to release anything since the Supabase client manages its own connections
+#     pass 

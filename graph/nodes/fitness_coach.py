@@ -669,14 +669,17 @@ User details:
             ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
 
             [Instructions]
-            1. Create a clear, structured assessment with the following sections:
+
+            1. Always start your response with 2 blank lines, then on a new line the section header "## Profile Assessment".
+            
+            2. Create a clear, structured assessment with the following sections:
             - Current fitness status overview
             - Analysis of body composition and structure 
             - Alignment between client's goals and current physical state
             - Realistic timeframes for achieving stated goals
             - Key focus areas for improvement
 
-            2. {f'''Progress Comparison Analysis:
+            3. {f'''Progress Comparison Analysis:
             - Compare current measurements/stats with previous assessment
             - Identify specific improvements in body composition, posture, or muscle development
             - Quantify changes in weight, muscle mass, and body fat percentage when possible
@@ -685,13 +688,13 @@ User details:
             - Analyze if progress is aligned with previously stated goals
             ''' if previous_profile_assessment else 'Since this is the first assessment, establish clear baseline metrics for future comparison.'}
 
-            3. Professional tone:
+            4. Professional tone:
             - Be honest but encouraging
             - Use precise, measurable language
             - Avoid generic statements; be specific to this client
             - Balance constructive feedback with positive reinforcement
 
-            4. Formatting guidelines:
+            5. Formatting guidelines:
             - Use "## Profile Assessment" as the main section header
             - Use only H3 ("###") headings for subsections
             - NEVER use level 2 headings (##) for any subsection - only for the main section title
@@ -770,7 +773,7 @@ User details:
             ''' if previous_profile_assessment else '--- NO PREVIOUS ASSESSMENTS AVAILABLE ---'}
 
             [Instructions]
-            1. Begin your assessment with the section header "## Profile Assessment"
+            1. Always start your response with 2 blank lines, then on a new line the section header "## Profile Assessment".
             
             2. Create a structured assessment with these subsections:
                - Current fitness status overview based on provided metrics
@@ -965,7 +968,7 @@ class DietaryAgent:
             ''' if previous_dietary_plan else '--- NO PREVIOUS DIETARY PLAN AVAILABLE ---'}
 
             [Instructions]
-            1. Begin your response with the heading "## Dietary Plan"
+            1. Always start your response with 2 blank lines, then on a new line the heading "## Dietary Plan".
             
             2. Create a structured meal plan with these components:
             - Daily caloric and macronutrient targets based on client goals
@@ -1219,7 +1222,7 @@ class QueryAgent:
     def __init__(self):
         self.llm = ChatOpenAI(
             model="gpt-4o",
-            temperature=0.5,
+            temperature=0.2,
             streaming=True,
             callbacks=[StreamingStdOutCallbackHandler()]
         )
@@ -1227,58 +1230,46 @@ class QueryAgent:
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
         """Stream response to query"""
         # Get stream writer for emitting events
-        writer = get_stream_writer()
+        #writer = get_stream_writer()
         
         if not state["current_query"]:
             return
         
         # Emit start of query processing
-        writer({"type": "step", "content": f"Processing query: {state['current_query']}"})
+        #writer({"type": "step", "content": f"Processing query: {state['current_query']}"})
         
         # Get previous sections if available
-        previous_sections = state.get("previous_sections", {})
+        #previous_sections = state.get("previous_sections", {})
         
         # Simple query handling without routing logic
-        query_prompt = f"""
-        User Query: {state["current_query"]}
+        system_message = SystemMessage(
+            content=(
+                "You are an elite, highly experienced fitness and nutrition coach. "
+                "Below is the user's complete fitness profile overview, including all relevant assessments, plans, and progress tracking."
+                "Use this as the authoritative context for answering any questions. "
+                "Be specific, actionable, and always reference the user's actual data and goals. "
+                "If the question is about progress, compare relevant sections. "
+                "If you need to clarify, ask a follow-up question."
+                "\n\n"
+                f"{state.get('complete_response', '')}"
+            )
+        )
         
-        Context:
-        Dietary Plan: {state["dietary_state"].content}
-        Fitness Plan: {state["fitness_state"].content}
-        User Profile: {state["user_profile"]}
-        
-        {f'''Previous Data (for reference):
-        Previous Profile Assessment: {previous_sections.get("profile_assessment", "")}
-        Previous Dietary Plan: {previous_sections.get("dietary_plan", "")}
-        Previous Fitness Plan: {previous_sections.get("fitness_plan", "")}
-        ''' if previous_sections else ''}
-        
-        Provide a detailed, personalized response to the user's question.
-        Ensure the answer is:
-        - Specific to their health and fitness plan
-        - Actionable
-        - Based on the generated plans
-        - Considers all relevant aspects of their fitness and dietary plans
-        
-        {f'''If the user's question relates to changes over time or progress:
-        - Compare their previous and current plans
-        - Highlight improvements or changes
-        - Explain how their approach has evolved based on their progress
-        ''' if previous_sections else ''}
-        """
-        
+        human_message = HumanMessage(
+            content=state["current_query"]
+        )
+
+        messages = [system_message, human_message]
         # Emit analyzing step
-        writer({"type": "step", "content": "Analyzing query against your personalized plans..."})
+        #writer({"type": "step", "content": "Analyzing query against your personalized plans..."})
         
         # Stream the response
-        async for chunk in self.llm.astream(query_prompt):
+        async for chunk in self.llm.astream(messages):
             if chunk.content:
-                # Emit response content 
-                writer({"type": "response", "content": chunk.content})
                 yield chunk.content
         
         # Signal completion
-        writer({"type": "step", "content": "Query processing completed."})
+        #writer({"type": "step", "content": "Query processing completed."})
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Handle user queries about their fitness and dietary plans"""
