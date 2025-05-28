@@ -1,14 +1,17 @@
 {
     "build": {
       "builder": "nixpacks",
-      "buildCommand": "pip install -r requirements.txt"
+      "buildCommand": "pip install --no-cache-dir -r requirements.txt"
     },
     "deploy": {
-      "startCommand": "python main.py",
+      "startCommand": "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1",
       "restartPolicyType": "ON_FAILURE",
-      "restartPolicyMaxRetries": 10
+      "restartPolicyMaxRetries": 3,
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 300
     },
     "nixpacks": {
-      "aptPackages": ["libpq-dev", "python3-dev"]
+      "aptPackages": ["libpq-dev", "python3-dev", "gcc"],
+      "pythonVersion": "3.12"
     }
   }

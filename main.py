@@ -15,6 +15,24 @@ import socketio
 
 load_dotenv()
 
+# Configure logging for production
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log') if os.environ.get("ENVIRONMENT") != "production" else logging.StreamHandler()
+    ]
+)
+
+# Set specific logger levels
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("fastapi").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
 from graph.graph import app as qa_app
 from graph.workout_graph import app as workout_app, initialize_workout_state
 from graph.workout_state import Workout, UserProfile, WorkoutState, AgentState, QueryType
@@ -50,6 +68,32 @@ api.add_middleware(
     expose_headers=["Content-Type", "Accept"],
 )
 
+# Error handling middleware
+@api.middleware("http")
+async def error_handling_middleware(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        logger.error(f"Unhandled error: {str(e)}", exc_info=True)
+        return HTTPException(
+            status_code=500,
+            detail="Internal server error. Please try again later."
+        )
+
+# Request logging middleware
+@api.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    start_time = datetime.now()
+    logger.info(f"Request: {request.method} {request.url}")
+    
+    response = await call_next(request)
+    
+    duration = (datetime.now() - start_time).total_seconds()
+    logger.info(f"Response: {response.status_code} - {duration:.2f}s")
+    
+    return response
+
 # --- Socket.IO Integration ---
 # Create Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -61,6 +105,66 @@ register_socketio(sio)
 print("Registered Socket.IO instance with shared_state")
 
 memory_saver = MemorySaver()
+
+# Health Check Endpoint
+@api.get("/health")
+async def health_check():
+    """Health check endpoint for Railway and monitoring"""
+    try:
+        # Test Supabase connection
+        from graph.memory_store import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Test vector database
+        vector_store_status = "unavailable"
+        try:
+            from ingestion import get_vectorstore
+            vs = get_vectorstore()
+            if vs:
+                vector_store_status = "available"
+        except Exception:
+            pass
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "supabase": "connected",
+                "vector_store": vector_store_status,
+                "socketio": "running"
+            },
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e),
+            "services": {
+                "supabase": "error",
+                "vector_store": "unknown",
+                "socketio": "unknown"
+            }
+        }
+
+# Root endpoint
+@api.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Fitness Coach API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "fitness_profile": "/fitness/profile/stream",
+            "fitness_query": "/fitness/query",
+            "ask": "/ask",
+            "workout_create": "/workout/create",
+            "model_chat": "/model/chat/stream"
+        }
+    }
 
 # Note: We're no longer defining thread_to_sid here - it's now in shared_state.py
 

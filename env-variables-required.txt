@@ -1,0 +1,30 @@
+# REQUIRED ENVIRONMENT VARIABLES FOR RAILWAY DEPLOYMENT
+
+## Core Application
+PORT=8080  # Railway will set this automatically
+
+## AI Services (REQUIRED)
+OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+## Database & Storage (REQUIRED)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your_supabase_service_key_here
+
+## Search Service (REQUIRED for web search functionality)
+TAVILY_API_KEY=your_tavily_api_key_here
+
+## Optional - Monitoring & Tracing
+LANGCHAIN_TRACING_V2=false
+LANGCHAIN_API_KEY=your_langchain_api_key_here
+LANGCHAIN_PROJECT=fitness-coach-production
+
+## Environment Configuration
+ENVIRONMENT=production
+DEBUG=false
+
+# DEPLOYMENT CHECKLIST:
+# 1. Set all REQUIRED variables in Railway dashboard
+# 2. Ensure Supabase project is active and accessible
+# 3. Verify API keys are valid and have proper permissions
+# 4. Test connection to all external services before deployment 

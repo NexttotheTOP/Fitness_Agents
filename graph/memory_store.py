@@ -123,7 +123,7 @@ def store_profile_overview(user_id: str, thread_id: str, complete_overview: str,
         result = supabase.table("profile_overview_generations").insert(data).execute()
         
         # If we get here, the operation was successful
-        print(f"Insert successful. Result data: {result.data}")
+        print(f"Insert successful. ================================")
         print(f"Successfully stored profile overview for user {user_id}")
         print("==========================================\n\n")
         
