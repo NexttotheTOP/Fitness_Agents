@@ -2,16 +2,7 @@
 
 This project creates a professional fitness coach agent powered by YouTube content from fitness experts. The system uses a RAG (Retrieval Augmented Generation) approach to provide accurate, up-to-date fitness advice.
 
-## Setup
 
-1. Install the required dependencies:
-   ```bash
-   pip install -r youtube_requirements.txt
-   ```
-
-2. Make sure you have set up your `.env` file with your OpenAI API key:
-   ```
-   OPENAI_API_KEY=your_api_key_here
    ```
 
 ## Data Collection
