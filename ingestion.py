@@ -15,6 +15,21 @@ import json
 import logging
 import shutil
 
+# Add Supabase vector support
+try:
+    from supabase_retriever import (
+        get_supabase_retriever, 
+        check_supabase_vectorstore,
+        SupabaseVectorRetriever
+    )
+    SUPABASE_AVAILABLE = True
+    logger = logging.getLogger("ingestion")
+    logger.info("✅ Supabase vector retriever available")
+except ImportError as e:
+    SUPABASE_AVAILABLE = False
+    logger = logging.getLogger("ingestion")
+    logger.warning(f"⚠️ Supabase vector retriever not available: {e}")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -24,13 +39,15 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger("ingestion")
 
 # Disable excessive logging from HTTP libraries
 for noisy_logger in ["httpx", "httpcore", "hpack", "httpcore.http2"]:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 load_dotenv()
+
+# Environment variable to control which vector store to use
+USE_SUPABASE = os.getenv("USE_SUPABASE_VECTOR", "true").lower() == "true"
 
 # Function to extract video ID from YouTube URL
 def extract_video_id(url):
@@ -235,15 +252,35 @@ def get_vectorstore():
         return None
 
 def get_retriever():
-    """Get a retriever from the existing vectorstore"""
-    # logger.info("Creating retriever from vectorstore")
+    """
+    Get a retriever from the available vectorstore.
+    Priority: Supabase (if available and enabled) -> ChromaDB (fallback)
+    """
+    logger.info("🔍 Creating retriever from available vectorstore...")
+    
+    # Try Supabase first (if available and enabled)
+    if USE_SUPABASE and SUPABASE_AVAILABLE:
+        logger.info("🚀 Attempting to use Supabase vector retriever...")
+        try:
+            exists, supabase_retriever = check_supabase_vectorstore()
+            if exists and supabase_retriever is not None:
+                logger.info("✅ Supabase retriever created successfully")
+                print("Supabase Retriever created ================================")
+                return supabase_retriever
+            else:
+                logger.warning("⚠️ Supabase vectorstore not available, falling back to ChromaDB")
+        except Exception as e:
+            logger.warning(f"⚠️ Supabase retriever failed: {e}, falling back to ChromaDB")
+    
+    # Fallback to ChromaDB
+    logger.info("🔄 Falling back to ChromaDB retriever...")
     
     # Try to use existing check function
     exists, vs = check_vectorstore()
     
     if exists and vs is not None:
-        # logger.info("Retriever created successfully from existing vectorstore")
-        print("Retriever created ================================")
+        logger.info("✅ ChromaDB retriever created successfully from existing vectorstore")
+        print("ChromaDB Retriever created ================================")
         return vs.as_retriever(
             search_type="similarity_score_threshold", 
             search_kwargs={"score_threshold": 0.7, "k": 15}
@@ -252,15 +289,74 @@ def get_retriever():
     # Fallback to old method
     vs = get_vectorstore()
     if vs is not None:
-        # logger.info("Retriever created successfully using legacy method")
-        print("Retriever created ================================")
+        logger.info("✅ ChromaDB retriever created successfully using legacy method")
+        print("ChromaDB Retriever created ================================")
         return vs.as_retriever(
             search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.5, "k": 10}
+            search_kwargs={"score_threshold": 0.5, "k": 15}
         )
     
-    # logger.warning("Failed to create retriever - vectorstore not available")
+    logger.error("❌ Failed to create any retriever - no vectorstore available")
     return None
+
+def check_vectorstore_availability():
+    """
+    Check which vector stores are available and return status
+    """
+    status = {
+        "supabase": {"available": False, "enabled": USE_SUPABASE, "count": 0},
+        "chromadb": {"available": False, "enabled": True, "count": 0}
+    }
+    
+    # Check Supabase
+    if SUPABASE_AVAILABLE and USE_SUPABASE:
+        try:
+            exists, retriever = check_supabase_vectorstore()
+            if exists:
+                # Try to get document count
+                try:
+                    from graph.memory_store import get_supabase_client
+                    supabase = get_supabase_client()
+                    result = supabase.table('fitness_documents').select('id', count='exact').limit(1).execute()
+                    status["supabase"]["count"] = getattr(result, 'count', 0)
+                    status["supabase"]["available"] = True
+                except:
+                    status["supabase"]["available"] = True
+        except Exception as e:
+            logger.warning(f"Supabase check failed: {e}")
+    
+    # Check ChromaDB
+    try:
+        exists, vs = check_vectorstore()
+        if exists and vs:
+            status["chromadb"]["available"] = True
+            try:
+                status["chromadb"]["count"] = vs._collection.count()
+            except:
+                status["chromadb"]["count"] = "unknown"
+    except Exception as e:
+        logger.warning(f"ChromaDB check failed: {e}")
+    
+    return status
+
+def get_retriever_info():
+    """Get information about the current retriever setup"""
+    info = {
+        "current_retriever": None,
+        "supabase_enabled": USE_SUPABASE,
+        "supabase_available": SUPABASE_AVAILABLE,
+        "status": check_vectorstore_availability()
+    }
+    
+    # Determine which retriever would be used
+    if USE_SUPABASE and SUPABASE_AVAILABLE and info["status"]["supabase"]["available"]:
+        info["current_retriever"] = "supabase"
+    elif info["status"]["chromadb"]["available"]:
+        info["current_retriever"] = "chromadb"
+    else:
+        info["current_retriever"] = "none"
+    
+    return info
 
 # Export the retriever for use in the application
 retriever = get_retriever()
@@ -475,7 +571,7 @@ def create_fitness_vector_database(batch_size=250):
         global retriever
         retriever = vectorstore.as_retriever(
             search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.5, "k": 10}
+            search_kwargs={"score_threshold": 0.5, "k": 15}
         )
         # logger.info("Global retriever updated with new vector database")
     except Exception as e:
