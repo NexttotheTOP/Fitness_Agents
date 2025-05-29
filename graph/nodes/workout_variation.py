@@ -19,8 +19,10 @@ def generate_workout_variation(state: StateForWorkoutApp) -> Dict[str, Any]:
         # Call the chain
         print("\nCalling workout variation chain...")
         response = workout_variation_chain.invoke({
-            "input_workout": input_json
+            "input_workout": input_json,
+            "profile_overview": state["previous_complete_response"]
         })
+        print(f"=========================================previous_complete_response: {state['previous_complete_response']}")
         
         # Parse the response
         print("\nRaw response from LLM:")

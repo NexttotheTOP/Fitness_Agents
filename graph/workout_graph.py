@@ -83,7 +83,7 @@ def initialize_workout_state(
     
     if profile_data:
         print(f"Found profile data in backend: {profile_data}")
-        print(f"- Response length: {len(profile_data.get('response', ''))}")
+        print(f"- Response length: {len(profile_data.get('content', ''))}")
         print(f"- Metadata keys: {list(profile_data.get('metadata', {}).keys())}")
     else:
         print("No profile data found in backend")
@@ -95,7 +95,7 @@ def initialize_workout_state(
     
     if profile_data:
         # Get the full response
-        previous_response = profile_data.get("response", "")
+        previous_response = profile_data.get("content", "")
         print(f"\n---PARSING BACKEND PROFILE SECTIONS---")
         print(f"Previous response length: {len(previous_response)}")
         
@@ -138,7 +138,7 @@ def initialize_workout_state(
         "health_limitations": [],  # Will be populated by the analysis agent
         
         # Reference data
-        "previous_complete_response": profile_data.get("response", "") if profile_data else "",
+        "previous_complete_response": profile_data.get("content", "") if profile_data else "",
         "previous_sections": profile_sections
     }
     

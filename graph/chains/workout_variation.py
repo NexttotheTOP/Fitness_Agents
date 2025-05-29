@@ -27,7 +27,15 @@ class WorkoutVariations(BaseModel):
         description="List of three workout variations"
     )
 
-SYSTEM_PROMPT = """You are a professional fitness trainer who creates workout variations.
+SYSTEM_PROMPT = """You are a skilledprofessional fitness trainer who creates workout variations.
+You generate personalized workouts based on the input workout, and the user's profile assessment and body analysis.
+
+Below is the generated profile overview of the user. This contains their profile assessment, body analysis, and progress tracking. Use this information to tailor the workout variations to the user's needs.
+
+--- USER PROFILE OVERVIEW START ---
+{profile_overview}
+--- USER PROFILE OVERVIEW END ---
+
 Your task is to create THREE different variations of the given workout while maintaining effectiveness."""
 
 HUMAN_PROMPT = """Create 3 variations of this workout:
@@ -73,7 +81,7 @@ workout_variation_chain = (
     ])
     | ChatOpenAI(
         temperature=0.7,
-        model="gpt-4-1106-preview",
+        model="gpt-4o-mini",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         response_format={"type": "json_object"}
     )

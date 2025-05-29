@@ -54,6 +54,7 @@ from langgraph.checkpoint.memory import MemorySaver
 # Add 3D model API imports
 from graph.model_graph import model_graph
 from graph.memory_store import get_previous_profile_overviews
+from graph.nodes.workout_variation import generate_workout_variation
 
 # Create FastAPI app
 api = FastAPI(title="Fitness Coach API")
@@ -874,14 +875,14 @@ async def generate_workout_variations(request: WorkoutVariationRequest):
         # Initialize state
         state = initialize_workout_state(
             user_id=request.user_id,
-            workout_prompt="Generate variations of this workout",  # Default prompt
+            workout_prompt="Based on my profile, generate 3-5 variations of this workout that are tailored to my profile.", 
             workflow_type="variation",
             original_workout=request.original_workout,
             thread_id=request.thread_id
         )
         
         # Process through graph
-        result = workout_app.invoke(state)
+        result = generate_workout_variation(state)
         
         # Return variations
         return {
@@ -894,6 +895,7 @@ async def generate_workout_variations(request: WorkoutVariationRequest):
         logging.error(f"Error generating workout variations: {str(e)}")
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+    
 
 async def generate_response_stream(state: dict, query: str = None) -> AsyncIterable[str]:
     """Generate streaming response in SSE format"""
