@@ -118,6 +118,7 @@ class StateForWorkoutApp(TypedDict):
     workflow_type: str  # "create" or "variation" to explicitly state the intention
     original_workout: Optional[Workout]  # Original workout (required for variations)
     created_workouts: List[Workout]  # List of newly created workouts
+    created_exercises: List[Exercise]  # Standalone exercises generated (optional)
     variations: List[Workout]  # Workout variations if requested
     
     # Context from frontend
@@ -134,3 +135,30 @@ class StateForWorkoutApp(TypedDict):
     previous_sections: Optional[Dict[str, str]]  # Previous sections
     reasoning: Optional[str]  # Reasoning for workout creation
     plan_proposal_markdown: Optional[str]  # Plan proposal for workout creation
+    
+    # Conversation history for HITL
+    analysis_conversation_history: Optional[List[Dict[str, str]]]  # Conversation during analysis phase
+    pending_user_input: Optional[str]  # Question waiting for user response
+    needs_user_input: Optional[bool]  # Flag indicating if user input is needed
+
+
+
+class WorkoutsResponse(BaseModel):
+    """Top-level container for a list of full workout definitions."""
+
+    workouts: List[Workout]
+
+    class Config:
+        extra = "allow"
+
+
+class ExercisesResponse(BaseModel):
+    """Top-level container for a list of individual exercises that are **not**
+    grouped into workouts.  This enables the system to flexibly return a set
+    of exercises when generating a complete workout is unnecessary (e.g., the
+    user only requests exercise ideas or substitutes)."""
+
+    exercises: List[Exercise]
+
+    class Config:
+        extra = "allow"

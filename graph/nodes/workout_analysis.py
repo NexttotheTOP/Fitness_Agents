@@ -3,6 +3,9 @@ from graph.workout_state import StateForWorkoutApp
 import json
 import logging
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
+from datetime import datetime
+from langgraph.types import StreamWriter   # keep for typing though
+from langgraph.config import get_stream_writer  # NEW
 
 def build_context_info(context: dict, workout_prompt: str = "") -> str:
     """
@@ -79,6 +82,10 @@ def build_context_info(context: dict, workout_prompt: str = "") -> str:
     
     return context_info
 
+# ------------------------------------------------------------
+# Workout Analysis Agent
+# ------------------------------------------------------------
+
 class WorkoutAnalysisAgent:
     """Agent that analyzes user profile for workout-relevant information"""
     
@@ -89,13 +96,23 @@ class WorkoutAnalysisAgent:
             streaming=True
         )
     
-    async def analyze_user_profile(self, state: StateForWorkoutApp):
+    async def analyze_user_profile(
+        self,
+        state: StateForWorkoutApp,
+    ):
         """
         Analyze the user profile and extract health limitations, injuries,
         and other relevant information for workout planning.
         """
+        # Obtain the stream writer from LangGraph runtime
+        writer = get_stream_writer()
+
         print("\n---ANALYZING USER PROFILE---")
-        yield {"type": "step", "content": "Analyzing user profile..."}
+        writer({"type": "step", "content": "Analyzing user profile..."})
+        
+        # Get conversation history for tracking
+        conversation_history = state.get("analysis_conversation_history", [])
+        print(f"Conversation history: {len(conversation_history)} messages")
         
         # Get profile information from state
         profile_assessment = state.get("profile_assessment", "")
@@ -144,27 +161,21 @@ class WorkoutAnalysisAgent:
                                     Output your responses in clear, conversational language, as if you are chatting directly with the user. Do not output code or JSON unless the user specifically asks for it.
         """))
         
-        # # System message with all user profile information
-        # profile_content = "User Profile Information:\n\n"
-        
-        # if user_profile:
-        #     profile_content += f"User Profile Data:\n{json.dumps(user_profile, indent=2)}\n\n"
-        
-        # if profile_assessment:
-        #     profile_content += f"Profile Assessment:\n{profile_assessment}\n\n"
-        
-        # if body_analysis:
-        #     profile_content += f"Body Analysis:\n{body_analysis}\n\n"
-        
-        # if previous_profile:
-        #     profile_content += f"Previous Profile Assessment:\n{previous_profile}\n\n"
-        
-        #     messages.append(SystemMessage(content=profile_content.strip()))
+        # Add user profile overview - IMPORTANT CONTEXT
         overview = state.get("previous_complete_response", "")
         if overview:
             messages.append(SystemMessage(content=f"User Profile Overview:\n{overview}"))
 
-        messages.append(HumanMessage(content=f"""Please analyze my fitness profile for workout planning. My request: "{workout_prompt}"."""))
+        # Add conversation history if it exists
+        if conversation_history:
+            for msg in conversation_history:
+                if msg["role"] == "user":
+                    messages.append(HumanMessage(content=str(msg["content"])))
+                elif msg["role"] == "assistant":
+                    messages.append(SystemMessage(content=f"Previous assistant response: {msg['content']}"))
+
+        # Add the current user request
+        messages.append(HumanMessage(content=str(workout_prompt)))
         
         if context_info:
             messages.append(SystemMessage(content=f"""Referenced Context:{context_info}"""))
@@ -176,7 +187,7 @@ class WorkoutAnalysisAgent:
             response_text = ""
             
             # Simple status message
-            yield {"type": "progress", "content": "Starting profile analysis..."}
+            writer({"type": "progress", "content": "Starting profile analysis..."})
             
             async for chunk in self.llm.astream(messages):
                 if isinstance(chunk, AIMessageChunk):
@@ -184,16 +195,43 @@ class WorkoutAnalysisAgent:
                 else:
                     token = str(chunk)
                 if token:
+                    # Stream token to client
+                    writer({"type": "token", "content": token})
                     response_text += token
-                    yield {"type": "token", "content": token}
             
-            # Store the full analysis
+            # Update conversation history
+            conversation_history.append({
+                "role": "user",
+                "content": workout_prompt,  # Use the actual user input
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            conversation_history.append({
+                "role": "assistant",
+                "content": response_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Update state
+            state["analysis_conversation_history"] = conversation_history
             state["workout_profile_analysis"] = response_text
             
+            print(f"ANALYSIS NODE - State ID: {id(state)}")
+            print(f"Set workout_profile_analysis: {response_text[:100]}...")
+            print(f"State keys: {list(state.keys())}")
+            print(f"Value actually in state: {state.get('workout_profile_analysis', 'NOT_FOUND')[:100]}...")
+            
             # Simple completion message    
-            yield {"type": "progress", "content": "Profile analysis completed"}
+            writer({"type": "progress", "content": "Profile analysis completed"})
                 
-            yield {"type": "result", "content": response_text}
+            yield {
+                "type": "result",
+                "content": response_text
+            }
+            yield {
+                "workout_profile_analysis": response_text,
+                "analysis_conversation_history": conversation_history,
+            }
             
         except Exception as e:
             print(f"Error in analyze_user_profile: {str(e)}")

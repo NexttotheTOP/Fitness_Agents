@@ -9,39 +9,35 @@ import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from graph.memory_store import get_most_recent_profile_overview
-from graph.chains.workout_router import route_by_workflow_type
+from graph.chains.workout_router import route_by_workflow_type, should_continue_conversation
+from graph.nodes.human_feedback import await_human_feedback
 
 def create_workout_graph():
-    """Create the workout graph."""
+    """Create the workout graph with HITL conversation support."""
     # Create a new graph
     workflow = StateGraph(StateForWorkoutApp)
 
     # Add the nodes
     workflow.add_node("analyze_profile", WorkoutAnalysisAgent().analyze_user_profile)
-    #workflow.add_node("route", route_by_workflow_type)
+    workflow.add_node("human_feedback", await_human_feedback)
     workflow.add_node("propose_plan", propose_workout_plan)
     workflow.add_node("create_workout", create_workout_from_nlq)
-    #workflow.add_node("generate_variations", generate_workout_variation)
 
-    # Add the edges
-    # First analyze profile, then route
-    workflow.add_edge("analyze_profile", "propose_plan")
-    
-    # # Route to appropriate node based on "next" key
+    # Add conditional edges for HITL conversation
     # workflow.add_conditional_edges(
-    #     "route",
-    #     lambda x: x["next"],
+    #     "analyze_profile",
+    #     should_continue_conversation,  # LLM router function
     #     {
-    #         "create_workout": "propose_plan",
-    #         "generate_variations": "generate_variations"
+    #         "continue": "analyze_profile",  # Loop back for more conversation
+    #         "proceed": "propose_plan"       # Move to workout planning
     #     }
     # )
-    # Proposal node only before create_workout
-    workflow.add_edge("propose_plan", "create_workout")
     
-    # Finally end
+    # Linear flow after conversation is complete
+    workflow.add_edge("analyze_profile", "human_feedback")
+    workflow.add_edge("human_feedback", "propose_plan")
+    workflow.add_edge("propose_plan", "create_workout")
     workflow.add_edge("create_workout", END)
-    #workflow.add_edge("generate_variations", END)
 
     # Set the entry point to profile analysis
     workflow.set_entry_point("analyze_profile")
@@ -134,6 +130,7 @@ def initialize_workout_state(
         "workflow_type": workflow_type,
         "original_workout": None,  # Will be populated below if provided
         "created_workouts": [],
+        "created_exercises": [],
         "variations": [],
         
         # Context from frontend (exercises and workouts referenced in prompt)
@@ -148,7 +145,12 @@ def initialize_workout_state(
         
         # Reference data
         "previous_complete_response": profile_data.get("content", "") if profile_data else "",
-        "previous_sections": profile_sections
+        "previous_sections": profile_sections,
+        
+        # Conversation history for HITL
+        "analysis_conversation_history": [],
+        "pending_user_input": None,
+        "needs_user_input": False
     }
     
     print("\nInitial state created with profile data:")

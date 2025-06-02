@@ -105,6 +105,9 @@ print("Registered Socket.IO instance with shared_state")
 
 memory_saver = MemorySaver()
 
+# At the top of main.py
+paused_workout_states = {}
+
 # # Health Check Endpoint
 # @api.get("/health")
 # async def health_check():
@@ -807,6 +810,37 @@ async def ask_question(question: Question):
         logging.error(f"Error in ask endpoint: {str(e)}")
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@api.post("/workout/feedback")
+async def workout_feedback(request: Request):
+    """
+    Receives user feedback and resumes the workout graph.
+    Expects JSON: { "thread_id": ..., "feedback": ... }
+    """
+    data = await request.json()
+    thread_id = data.get("thread_id")
+    feedback = data.get("feedback")
+
+    # Retrieve the paused state
+    state = paused_workout_states.get(thread_id)
+    if not state:
+        return {"error": "No paused state found for this thread_id."}
+
+    # Update state with feedback
+    state["user_feedback"] = feedback
+    state["needs_user_input"] = False
+
+    # Resume the graph
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "checkpoint_id": f"session_{thread_id}"
+        }
+    }
+    # You can stream or return the next result as needed
+    result = await workout_app.ainvoke(state, config=config)
+    return {"status": "resumed", "result": result}
 
 @api.post("/workout/create")
 async def create_workout(request: WorkoutNLQRequest):
@@ -831,30 +865,38 @@ async def create_workout(request: WorkoutNLQRequest):
             try:
                 async for chunk_type, chunk in workout_app.astream(
                     state,
-                    stream_mode=["updates", "custom", "messages"],
+                    # We no longer want to forward raw LLM tokens – omit "messages" stream mode
+                    stream_mode=["updates", "custom"],   
                     config=config
                 ):
+                    # Forward any custom or node_stream chunks (dicts) directly to the client
                     if chunk_type == "custom" and isinstance(chunk, dict):
-                        # Handle custom events (steps, tokens, results)
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        # Store state if awaiting feedback
+                        if chunk.get("type") == "await_feedback":
+                            paused_workout_states[state["thread_id"]] = state.copy()
+                        yield f"data: {json.dumps(chunk)}\n\n:\n\n"  # colon line forces flush
+                        if chunk.get("type") == "progress":
+                            print("➡️  emitting progress:", chunk["content"])
                     elif chunk_type == "updates" and isinstance(chunk, dict):
                         # Handle state updates
                         yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
-                    elif chunk_type == "messages":
-                        # Handle message chunks
-                        message_chunk, metadata = chunk
-                        if hasattr(message_chunk, 'content'):
-                            # Handle AIMessageChunk
-                            token = message_chunk.content
-                        elif isinstance(message_chunk, str):
-                            # Handle raw string tokens
-                            token = message_chunk
-                        else:
-                            # Handle any other type by converting to string
-                            token = str(message_chunk)
-                        
-                        if token:
-                            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    elif chunk_type == "custom":
+                        # node_stream yields are tuples: (value, metadata)
+                        try:
+                            value, meta = chunk if isinstance(chunk, tuple) and len(chunk) == 2 else (chunk, {})
+
+                            # If the yielded value is a dict with a `type`, forward as-is (e.g., progress)
+                            if isinstance(value, dict):
+                                yield f"data: {json.dumps(value)}\n\n:\n\n"
+                                if value.get("type") == "progress":
+                                    print("➡️  emitting progress (node_stream):", value.get("content"))
+                            else:
+                                # Otherwise treat as plain token
+                                token = str(value)
+                                if token:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                        except Exception as _err:
+                            print("Error handling node_stream chunk:", _err)
                 
                 # Send completion signal
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
