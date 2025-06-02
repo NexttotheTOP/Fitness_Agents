@@ -3,7 +3,6 @@
 
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import OpenAIEmbeddings
 from pytube import YouTube
@@ -103,47 +102,6 @@ youtube_urls = [
     "https://www.youtube.com/watch?v=NLuQmiOVm7Q",  # Sample: How many exercises per muscle
 ]
 
-# Add a function to check the vectorstore
-def check_vectorstore():
-    """Check if the vector database exists and contains documents"""
-    try:
-        # Try to access both possible vector stores
-        locations = [
-            ("./.fitness_chroma", "fitness-coach-chroma-new")
-        ]
-        
-        for directory, collection_name in locations:
-            if os.path.exists(directory):
-                # logger.info(f"Found vector database at {directory}")
-                try:
-                    import chromadb
-                    client_settings = chromadb.config.Settings(
-                        anonymized_telemetry=False,
-                        allow_reset=True
-                    )
-                    
-                    vs = Chroma(
-                        collection_name=collection_name,
-                        embedding_function=OpenAIEmbeddings(),
-                        persist_directory=directory,
-                        client_settings=client_settings
-                    )
-                    
-                    count = vs._collection.count()
-                    logger.info(f"Collection {collection_name} contains {count} documents")
-                    
-                    if count > 0:
-                        return True, vs
-                except Exception as e:
-                    # logger.error(f"Error accessing {collection_name}: {e}")
-                    pass
-        
-        # logger.warning("No populated vector database found")
-        return False, None
-    except Exception as e:
-        # logger.error(f"Error checking vector database: {e}", exc_info=True)
-        return False, None
-    
 def collect_and_prepare_documents():
     """Collect and prepare documents from YouTube videos - ADMIN ONLY FUNCTION"""
     # Prepare documents
@@ -195,70 +153,12 @@ def collect_and_prepare_documents():
     
     return doc_splits
 
-def create_vectorstore():
-    """Admin function to create the vectorstore - only called directly by admin tools"""
-    # logger.info("Starting vectorstore creation process")
-    doc_splits = collect_and_prepare_documents()
-    
-    # Save to vector database
-    persist_directory = "./.chroma"
-    # logger.info(f"Creating directory at {persist_directory}")
-    os.makedirs(persist_directory, exist_ok=True)
-    
-    try:
-        logger.info(f"Creating vectorstore with {len(doc_splits)} documents")
-        vectorstore = Chroma.from_documents(
-            documents=doc_splits,
-            collection_name="fitness-coach-chroma",
-            embedding=OpenAIEmbeddings(),
-            persist_directory=persist_directory,
-        )
-        
-        # logger.info(f"Vector database created and saved to {persist_directory}")
-        return vectorstore
-    except Exception as e:
-        # logger.error(f"Failed to create vectorstore: {e}", exc_info=True)
-        return None
-
-def get_vectorstore():
-    """Get the existing vectorstore - used by the main application"""
-    persist_directory = "./.fitness_chroma"
-    # logger.info(f"Attempting to access vectorstore at {persist_directory}")
-    try:
-        import chromadb
-        client_settings = chromadb.config.Settings(
-            anonymized_telemetry=False,
-            allow_reset=True
-        )
-        
-        vs = Chroma(
-            collection_name="fitness-coach-chroma-new",
-            embedding_function=OpenAIEmbeddings(),
-            persist_directory=persist_directory,
-            client_settings=client_settings
-        )
-        
-        # Test if the collection actually exists and has documents
-        count = vs._collection.count()
-        if count > 0:
-            # logger.info(f"Successfully accessed vectorstore with {count} documents")
-            return vs
-        else:
-            # logger.warning(f"Vectorstore exists but is empty (0 documents)")
-            return None
-            
-    except Exception as e:
-        # logger.error(f"Error accessing vectorstore: {e}", exc_info=True)
-        return None
-
 def get_retriever():
     """
     Get a retriever from the available vectorstore.
-    Priority: Supabase (if available and enabled) -> ChromaDB (fallback)
+    Only Supabase is supported.
     """
-    logger.info("🔍 Creating retriever from available vectorstore...")
-    
-    # Try Supabase first (if available and enabled)
+    logger.info("🔍 Creating retriever from Supabase vectorstore...")
     if USE_SUPABASE and SUPABASE_AVAILABLE:
         logger.info("🚀 Attempting to use Supabase vector retriever...")
         try:
@@ -268,52 +168,23 @@ def get_retriever():
                 print("Supabase Retriever created ================================")
                 return supabase_retriever
             else:
-                logger.warning("⚠️ Supabase vectorstore not available, falling back to ChromaDB")
+                logger.error("❌ Supabase vectorstore not available.")
         except Exception as e:
-            logger.warning(f"⚠️ Supabase retriever failed: {e}, falling back to ChromaDB")
-    
-    # Fallback to ChromaDB
-    logger.info("🔄 Falling back to ChromaDB retriever...")
-    
-    # Try to use existing check function
-    exists, vs = check_vectorstore()
-    
-    if exists and vs is not None:
-        logger.info("✅ ChromaDB retriever created successfully from existing vectorstore")
-        print("ChromaDB Retriever created ================================")
-        return vs.as_retriever(
-            search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.7, "k": 15}
-        )
-    
-    # Fallback to old method
-    vs = get_vectorstore()
-    if vs is not None:
-        logger.info("✅ ChromaDB retriever created successfully using legacy method")
-        print("ChromaDB Retriever created ================================")
-        return vs.as_retriever(
-            search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.5, "k": 15}
-        )
-    
-    logger.error("❌ Failed to create any retriever - no vectorstore available")
+            logger.error(f"❌ Supabase retriever failed: {e}")
+    logger.error("❌ Failed to create any retriever - no Supabase vectorstore available")
     return None
 
 def check_vectorstore_availability():
     """
-    Check which vector stores are available and return status
+    Check if Supabase vector store is available and return status
     """
     status = {
-        "supabase": {"available": False, "enabled": USE_SUPABASE, "count": 0},
-        "chromadb": {"available": False, "enabled": True, "count": 0}
+        "supabase": {"available": False, "enabled": USE_SUPABASE, "count": 0}
     }
-    
-    # Check Supabase
     if SUPABASE_AVAILABLE and USE_SUPABASE:
         try:
             exists, retriever = check_supabase_vectorstore()
             if exists:
-                # Try to get document count
                 try:
                     from graph.memory_store import get_supabase_client
                     supabase = get_supabase_client()
@@ -324,38 +195,20 @@ def check_vectorstore_availability():
                     status["supabase"]["available"] = True
         except Exception as e:
             logger.warning(f"Supabase check failed: {e}")
-    
-    # Check ChromaDB
-    try:
-        exists, vs = check_vectorstore()
-        if exists and vs:
-            status["chromadb"]["available"] = True
-            try:
-                status["chromadb"]["count"] = vs._collection.count()
-            except:
-                status["chromadb"]["count"] = "unknown"
-    except Exception as e:
-        logger.warning(f"ChromaDB check failed: {e}")
-    
     return status
 
 def get_retriever_info():
-    """Get information about the current retriever setup"""
+    """Get information about the current retriever setup (Supabase only)"""
     info = {
         "current_retriever": None,
         "supabase_enabled": USE_SUPABASE,
         "supabase_available": SUPABASE_AVAILABLE,
         "status": check_vectorstore_availability()
     }
-    
-    # Determine which retriever would be used
     if USE_SUPABASE and SUPABASE_AVAILABLE and info["status"]["supabase"]["available"]:
         info["current_retriever"] = "supabase"
-    elif info["status"]["chromadb"]["available"]:
-        info["current_retriever"] = "chromadb"
     else:
         info["current_retriever"] = "none"
-    
     return info
 
 # Export the retriever for use in the application

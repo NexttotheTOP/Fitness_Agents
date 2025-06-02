@@ -47,8 +47,6 @@ from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
-# Import get_vectorstore from ingestion
-from ingestion import get_vectorstore
 from langgraph.checkpoint.memory import MemorySaver
 
 # Add 3D model API imports
@@ -107,46 +105,46 @@ print("Registered Socket.IO instance with shared_state")
 
 memory_saver = MemorySaver()
 
-# Health Check Endpoint
-@api.get("/health")
-async def health_check():
-    """Health check endpoint for Railway and monitoring"""
-    try:
-        # Test Supabase connection
-        from graph.memory_store import get_supabase_client
-        supabase = get_supabase_client()
+# # Health Check Endpoint
+# @api.get("/health")
+# async def health_check():
+#     """Health check endpoint for Railway and monitoring"""
+#     try:
+#         # Test Supabase connection
+#         from graph.memory_store import get_supabase_client
+#         supabase = get_supabase_client()
         
-        # Test vector database
-        vector_store_status = "unavailable"
-        try:
-            from ingestion import get_vectorstore
-            vs = get_vectorstore()
-            if vs:
-                vector_store_status = "available"
-        except Exception:
-            pass
+#         # Test vector database
+#         vector_store_status = "unavailable"
+#         try:
+#             from ingestion import get_vectorstore
+#             vs = get_vectorstore()
+#             if vs:
+#                 vector_store_status = "available"
+#         except Exception:
+#             pass
         
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "services": {
-                "supabase": "connected",
-                "vector_store": vector_store_status,
-                "socketio": "running"
-            },
-            "version": "1.0.0"
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "timestamp": datetime.now().isoformat(),
-            "error": str(e),
-            "services": {
-                "supabase": "error",
-                "vector_store": "unknown",
-                "socketio": "unknown"
-            }
-        }
+#         return {
+#             "status": "healthy",
+#             "timestamp": datetime.now().isoformat(),
+#             "services": {
+#                 "supabase": "connected",
+#                 "vector_store": vector_store_status,
+#                 "socketio": "running"
+#             },
+#             "version": "1.0.0"
+#         }
+#     except Exception as e:
+#         return {
+#             "status": "unhealthy",
+#             "timestamp": datetime.now().isoformat(),
+#             "error": str(e),
+#             "services": {
+#                 "supabase": "error",
+#                 "vector_store": "unknown",
+#                 "socketio": "unknown"
+#             }
+#         }
 
 # Root endpoint
 @api.get("/")
@@ -157,7 +155,7 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "endpoints": {
-            "health": "/health",
+            "health": "/health commented out",
             "docs": "/docs",
             "fitness_profile": "/fitness/profile/stream",
             "fitness_query": "/fitness/query",
@@ -464,39 +462,6 @@ async def handle_model_start(sid, data):
         "thread_id": thread_id,
     }, to=sid)
 
-# Initialize RAG system
-def init_rag_system():
-    try:
-        # Load the vector database using the get_vectorstore function
-        vectorstore = get_vectorstore()
-        
-        if vectorstore is None:
-            logging.warning("Vector database not found. Run the data collection scripts first.")
-            return None
-        
-        # Create a retriever
-        retriever = vectorstore.as_retriever(
-            search_type="mmr",  # Maximum Marginal Relevance for diversity
-            search_kwargs={"k": 5, "fetch_k": 10}  # Retrieve top 5 documents from top 10 candidates
-        )
-        
-        # Create the QA chain
-        llm = ChatOpenAI(temperature=0, model="gpt-4o-mini", streaming=True)
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",  # Stuff documents into a single prompt
-            retriever=retriever,
-            return_source_documents=True,
-        )
-        
-        logging.info("RAG system initialized successfully")
-        return qa_chain
-    except Exception as e:
-        logging.error(f"Error initializing RAG system: {str(e)}")
-        return None
-
-# Initialize RAG system on startup
-rag_system = init_rag_system()
 
 # Create request models
 class Question(BaseModel):
@@ -534,6 +499,7 @@ class WorkoutNLQRequest(BaseModel):
     user_id: str
     prompt: str
     thread_id: Optional[str] = None
+    context: Optional[Dict[str, List[Dict[str, Any]]]] = None  # Add context field
 
 class WorkoutVariationRequest(BaseModel):
     user_id: str
@@ -850,19 +816,58 @@ async def create_workout(request: WorkoutNLQRequest):
         state = initialize_workout_state(
             user_id=request.user_id,
             workout_prompt=request.prompt,
-            thread_id=request.thread_id
+            thread_id=request.thread_id,
+            context=request.context  # Pass context to initialization
         )
+
+        config = {
+            "configurable": {
+                "thread_id": state["thread_id"],
+                "checkpoint_id": f"session_{state['thread_id']}"
+            }
+        }
         
-        # Run the graph
-        result = workout_app.invoke(state)
-        print("API returning result:", result)
-        
-        # Ensure reasoning is always present
-        if "reasoning" not in result:
-            result["reasoning"] = ""
-        
-        # Return created workouts
-        return result
+        async def stream_workout():
+            try:
+                async for chunk_type, chunk in workout_app.astream(
+                    state,
+                    stream_mode=["updates", "custom", "messages"],
+                    config=config
+                ):
+                    if chunk_type == "custom" and isinstance(chunk, dict):
+                        # Handle custom events (steps, tokens, results)
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk_type == "updates" and isinstance(chunk, dict):
+                        # Handle state updates
+                        yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
+                    elif chunk_type == "messages":
+                        # Handle message chunks
+                        message_chunk, metadata = chunk
+                        if hasattr(message_chunk, 'content'):
+                            # Handle AIMessageChunk
+                            token = message_chunk.content
+                        elif isinstance(message_chunk, str):
+                            # Handle raw string tokens
+                            token = message_chunk
+                        else:
+                            # Handle any other type by converting to string
+                            token = str(message_chunk)
+                        
+                        if token:
+                            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                
+                # Send completion signal
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            except Exception as e:
+                logging.error(f"Error in workout streaming: {str(e)}")
+                logging.error(traceback.format_exc())
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            
+        return StreamingResponse(
+            stream_workout(),
+            media_type="text/event-stream"
+        )
     except Exception as e:
         logging.error(f"Error creating workout: {str(e)}")
         logging.error(traceback.format_exc())

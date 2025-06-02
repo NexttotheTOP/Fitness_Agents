@@ -120,15 +120,14 @@ class StateForWorkoutApp(TypedDict):
     created_workouts: List[Workout]  # List of newly created workouts
     variations: List[Workout]  # Workout variations if requested
     
-    # Analysis fields
-    analysis: dict  # General analysis
-    generation_status: Optional[str]  # Status of generation process
+    # Context from frontend
+    context: Optional[Dict[str, List[Dict[str, Any]]]]  # Referenced exercises and workouts from frontend
+    workout_profile_analysis: Optional[str]  # Full text output from the analysis/proposal agent
     
     # User profile context fields  
     user_profile: Dict[str, Any]  # User profile data
     profile_assessment: Optional[str]  # Extracted from profile overview
     body_analysis: Optional[str]  # Body analysis if available
-    health_limitations: Optional[List[str]]  # Health issues to consider
     
     # Reference data
     previous_complete_response: Optional[str]  # Previous complete response

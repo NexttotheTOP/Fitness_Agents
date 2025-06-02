@@ -18,30 +18,30 @@ def create_workout_graph():
 
     # Add the nodes
     workflow.add_node("analyze_profile", WorkoutAnalysisAgent().analyze_user_profile)
-    workflow.add_node("route", route_by_workflow_type)
+    #workflow.add_node("route", route_by_workflow_type)
     workflow.add_node("propose_plan", propose_workout_plan)
     workflow.add_node("create_workout", create_workout_from_nlq)
-    workflow.add_node("generate_variations", generate_workout_variation)
+    #workflow.add_node("generate_variations", generate_workout_variation)
 
     # Add the edges
     # First analyze profile, then route
-    workflow.add_edge("analyze_profile", "route")
+    workflow.add_edge("analyze_profile", "propose_plan")
     
-    # Route to appropriate node based on "next" key
-    workflow.add_conditional_edges(
-        "route",
-        lambda x: x["next"],
-        {
-            "create_workout": "propose_plan",
-            "generate_variations": "generate_variations"
-        }
-    )
+    # # Route to appropriate node based on "next" key
+    # workflow.add_conditional_edges(
+    #     "route",
+    #     lambda x: x["next"],
+    #     {
+    #         "create_workout": "propose_plan",
+    #         "generate_variations": "generate_variations"
+    #     }
+    # )
     # Proposal node only before create_workout
     workflow.add_edge("propose_plan", "create_workout")
     
     # Finally end
     workflow.add_edge("create_workout", END)
-    workflow.add_edge("generate_variations", END)
+    #workflow.add_edge("generate_variations", END)
 
     # Set the entry point to profile analysis
     workflow.set_entry_point("analyze_profile")
@@ -55,7 +55,8 @@ def initialize_workout_state(
     workout_prompt: str,
     workflow_type: str = "create",
     original_workout: Optional[Dict] = None,
-    thread_id: Optional[str] = None
+    thread_id: Optional[str] = None,
+    context: Optional[Dict[str, List[Dict[str, Any]]]] = None  # Add context parameter
 ) -> StateForWorkoutApp:
     """
     Initialize state for workout app
@@ -66,11 +67,19 @@ def initialize_workout_state(
         workflow_type: "create" or "variation"
         original_workout: Original workout for variations (required if workflow_type="variation")
         thread_id: Optional thread ID, will be generated if not provided
+        context: Optional context containing referenced exercises and workouts
     """
     print("\n---INITIALIZING WORKOUT STATE---")
     print(f"User ID: {user_id}")
     print(f"Workflow Type: {workflow_type}")
     print(f"Thread ID: {thread_id}")
+    print(f"Context provided: {context is not None}")
+    
+    # Log context details if provided
+    if context:
+        exercises_count = len(context.get("exercises", []))
+        workouts_count = len(context.get("workouts", []))
+        print(f"Context contains: {exercises_count} exercises, {workouts_count} workouts")
     
     # Generate thread_id if not provided
     if not thread_id:
@@ -82,7 +91,7 @@ def initialize_workout_state(
     profile_data = get_most_recent_profile_overview(user_id)
     
     if profile_data:
-        print(f"Found profile data in backend: {profile_data}")
+        #print(f"Found profile data in backend: {profile_data}")
         print(f"- Response length: {len(profile_data.get('content', ''))}")
         print(f"- Metadata keys: {list(profile_data.get('metadata', {}).keys())}")
     else:
@@ -127,15 +136,15 @@ def initialize_workout_state(
         "created_workouts": [],
         "variations": [],
         
-        # Analysis fields
-        "analysis": {},
-        "generation_status": "pending",
+        # Context from frontend (exercises and workouts referenced in prompt)
+        "context": context or {},
         
         # User profile context
         "user_profile": profile_data.get("metadata", {}),  # Use backend metadata
         "profile_assessment": profile_assessment,
         "body_analysis": body_analysis,
-        "health_limitations": [],  # Will be populated by the analysis agent
+        "workout_profile_analysis": "",  # Will be populated by the analysis agent
+        "plan_proposal_markdown": "",  # Will be populated by the proposal agent
         
         # Reference data
         "previous_complete_response": profile_data.get("content", "") if profile_data else "",
@@ -146,6 +155,7 @@ def initialize_workout_state(
     print(f"- Profile assessment length: {len(state['profile_assessment'])}")
     print(f"- Body analysis length: {len(state['body_analysis'])}")
     print(f"- User profile keys: {list(state['user_profile'].keys())}")
+    print(f"- Context stored: {state['context'] is not None and len(state['context']) > 0}")
     
     # Handle original_workout for variations
     if workflow_type == "variation" and original_workout:
