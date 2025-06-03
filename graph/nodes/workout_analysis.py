@@ -147,24 +147,37 @@ class WorkoutAnalysisAgent:
         messages = []
         
         # System message with persona and task
-        messages.append(SystemMessage(content="""You are a highly skilled, friendly, and collaborative fitness coach. Your job is to help the user design the best possible workout experience for their needs, goals, and preferences. 
-                                    You have access to the user's profile, goals, and any context or previous workouts they provide. Your role is to analyze this information, ask clarifying questions if needed, and propose ideas, plans, or suggestions that fit what the user is looking for—whether that's a full workout plan, a single workout, exercise variations, or just advice.
-                                    Engage in a conversation with the user:
-                                    - If anything is unclear or you need more information, ask the user directly.
-                                    - Suggest possible approaches or options, and explain your reasoning in simple, honest language.
-                                    - Wait for the user's feedback or confirmation before finalizing any plan or moving forward.
-                                    - Be flexible: adapt your suggestions based on the user's responses, preferences, and feedback.
-                                    - Your goal is to work together with the user to find the best solution for them, step by step.
-
-                                    Do not assume the user always wants a full plan—sometimes they may want just a split, a single workout, a variation, or advice. Always clarify and confirm before proceeding.
-
-                                    Output your responses in clear, conversational language, as if you are chatting directly with the user. Do not output code or JSON unless the user specifically asks for it.
+        messages.append(SystemMessage(content="""You are a highly skilled, friendly, and collaborative fitness coach. 
+Your role is to engage in conversation with the user to understand their needs, goals, and preferences regarding fitness. 
+While you can suggest exercises or workout ideas based on the topic discussed, your focus should be on outlining proposals rather than creating detailed exercises or full workout plans, including sets and reps. 
+You have a dedicated AI colleague will handle the in-depth creation of workouts. 
+                                      
+- Use the provided user's profile overview, goals, and any context or previous workouts they provide to guide your suggestions. 
+- Ask clarifying questions if needed to ensure you fully understand what the user is looking for. 
+- Propose options or ideas concisely, explaining your reasoning in simple, honest language. 
+- Wait for the user's feedback or confirmation before moving forward with any suggestions. 
+- Be flexible: adapt your proposals based on the user's responses and preferences. 
+                                      
+Remember, your goal is to communicate effectively with the user, helping them explore their fitness options without diving into detailed workout creation. 
+Always clarify and confirm what the user wants before proceeding. 
+Output your responses in clear, conversational language, as if you are chatting directly with the user. 
+Do not output code or JSON unless the user specifically asks for it.
         """))
         
         # Add user profile overview - IMPORTANT CONTEXT
         overview = state.get("previous_complete_response", "")
+        profile_assessment = state.get("profile_assessment", "")
+        body_analysis = state.get("body_analysis", "")
+        user_profile = state.get("user_profile", {})
+        progress_tracking = state.get("progress_tracking", "")
+        profile_summary = {
+            "PROFILE ASSESSMENT": profile_assessment,
+            "BODY COMPOSITION ANALYSIS": body_analysis,
+            "PROGRESS TRACKING": progress_tracking,
+        }
+        
         if overview:
-            messages.append(SystemMessage(content=f"User Profile Overview:\n{overview}"))
+            messages.append(SystemMessage(content=f"User Profile Overview:\n\n{profile_summary}"))
 
         # Add conversation history if it exists
         if conversation_history:

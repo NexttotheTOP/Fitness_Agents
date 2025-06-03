@@ -58,6 +58,7 @@ Instructions:
 Output format:
 - If you are returning **full workouts**, wrap them in a JSON object with a single key `workouts`.
 - If you are returning **stand-alone exercises only** (no grouping into workouts), wrap them in a JSON object with a single key `exercises`.
+- Do not use ranges for the number of sets or reps. Use specific numbers.
 
 Do **NOT** include any extra keys or free-text outside the JSON object."""))
         
