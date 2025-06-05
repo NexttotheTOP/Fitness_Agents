@@ -129,6 +129,7 @@ class StateForWorkoutApp(TypedDict):
     user_profile: Dict[str, Any]  # User profile data
     profile_assessment: Optional[str]  # Extracted from profile overview
     body_analysis: Optional[str]  # Body analysis if available
+    progress_tracking: Optional[str]  # Progress tracking if available
     
     # Reference data
     previous_complete_response: Optional[str]  # Previous complete response

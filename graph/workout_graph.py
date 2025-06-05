@@ -11,6 +11,7 @@ from datetime import datetime
 from graph.memory_store import get_most_recent_profile_overview
 from graph.chains.workout_router import route_by_workflow_type, should_continue_conversation
 from graph.nodes.human_feedback import await_human_feedback
+import re
 
 def create_workout_graph():
     """Create the workout graph with HITL conversation support."""
@@ -111,6 +112,7 @@ def initialize_workout_state(
         # Get specific sections we need
         profile_assessment = profile_sections.get("profile_assessment", "")
         body_analysis = profile_sections.get("body_composition_analysis", "")
+        progress_tracking = profile_sections.get("progress_tracking", "")
         
         print(f"\nExtracted sections:")
         print(f"- Profile assessment length: {len(profile_assessment)}")
@@ -140,6 +142,7 @@ def initialize_workout_state(
         "user_profile": profile_data.get("metadata", {}),  # Use backend metadata
         "profile_assessment": profile_assessment,
         "body_analysis": body_analysis,
+        "progress_tracking": progress_tracking,
         "workout_profile_analysis": "",  # Will be populated by the analysis agent
         "plan_proposal_markdown": "",  # Will be populated by the proposal agent
         
@@ -181,29 +184,18 @@ def parse_markdown_sections(markdown_text: str) -> dict:
     """
     Parse markdown text and extract sections between h2 headers.
     Returns a dictionary with section names as keys and content as values.
-    
-    Args:
-        markdown_text: The markdown text to parse
-        
-    Returns:
-        dict: Dictionary with section names mapped to their content
     """
     print("\nParsing markdown sections...")
-    
-    # Initialize sections dict
+
+    # Use regex to split on any line starting with '## '
     sections = {}
-    
-    # Split text by h2 headers (##)
-    parts = markdown_text.split("\n## ")
-    
-    # Process each section
-    for part in parts[1:]:  # Skip first part (before first h2)
-        # Split into title and content
-        lines = part.split("\n")
-        title = lines[0].strip().lower().replace(" ", "_")  # Normalize title
-        content = "\n".join(lines[1:]).strip()
-        
+    # Find all h2 headers and their positions
+    matches = list(re.finditer(r'^## (.+)', markdown_text, re.MULTILINE))
+    for i, match in enumerate(matches):
+        title = match.group(1).strip().lower().replace(" ", "_")
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
+        content = markdown_text[start:end].strip()
         print(f"Found section: {title}")
         sections[title] = content
-    
     return sections 

@@ -35,30 +35,28 @@ async def create_workout_from_nlq(state: StateForWorkoutApp):
         
         # Build messages
         messages = []
-        messages.append(SystemMessage(content=f"PLAN PROPOSAL:\n{plan_proposal_markdown}"))
-        messages.append(SystemMessage(content="""You are an expert fitness coach and personal trainer with extensive experience creating personalized workout plans. You excel at designing safe, effective, and engaging workouts that align with your clients' goals while considering their unique circumstances and limitations.
+        messages.append(SystemMessage(content="""You are a world-class fitness coach and workout generator. 
+Your job is to take the provided structured workout plan, or single workouts and or exercises from the proposal and turn it into a detailed, high-quality, ready-to-use workout JSON object.
 
 Instructions:
-- Use the plan proposal below as your primary blueprint for creating the detailed workouts.
-- If the user has referenced specific exercises or workouts in the context below, incorporate them appropriately into your workout designs, depending on the user query.
-- Follow the structure, rationale, and focus areas outlined in the proposal.
-- Create at least 4-6 comprehensive, detailed workout plans unless the proposal or user request specifies otherwise.
-- Vary the number of exercises per workout (not always 4), and vary the estimated duration (e.g., some 30, 45, 60, or 90 minutes).
-- Each workout should:
-  1. Address the specific request in the user prompt and plan proposal
-  2. Consider the client's fitness level, goals, and all analysis results
-  3. Account for ALL health limitations and exercise restrictions identified by our Analysis Agent
-  4. Incorporate the recommended exercise modifications when relevant
-  5. Prioritize exercises for the identified focus areas while maintaining overall balance
-  6. Use available/preferred equipment when possible
-  7. Include appropriate exercises with proper comprehensive form guidance
-  8. Include a detailed, user-facing workout description that explains the purpose, benefits, and any special considerations for the client.
-  9. Specify sets and either reps OR duration for each exercise (use reps for strength exercises, duration for cardio/endurance)
+- Use the plan proposal below as your main source of truth for creating the detailed workouts and or exercises.
+- Strictly follow the required JSON schema and include all required fields (name, description, exercises, sets, reps, rest, etc.).
+- If the proposal is missing details (e.g., rest times, tempo, cues), fill them in with best practices for the user's goals and level.
+
+Focus on creating highly detailed and informative content:
+- Write comprehensive workout descriptions that explain the purpose, benefits, and special considerations
+- Provide detailed form guidance and technique notes for each exercise
+- Include specific cues and tips for proper execution
+- Add relevant safety considerations and modifications
+- Explain the reasoning behind exercise selection and progression
+- Specify exact sets and either reps OR duration for each exercise (use reps for strength exercises, duration for cardio/endurance)
 
 Output format:
-- If you are returning **full workouts**, wrap them in a JSON object with a single key `workouts`.
-- If you are returning **stand-alone exercises only** (no grouping into workouts), wrap them in a JSON object with a single key `exercises`.
+- Always return a single JSON object with both `workouts` and `exercises` keys
+- The `workouts` array should contain complete workout definitions
+- The `exercises` array should contain any standalone exercises
 - Do not use ranges for the number of sets or reps. Use specific numbers.
+- Do not include any free-text outside the JSON object.
 
 Do **NOT** include any extra keys or free-text outside the JSON object."""))
         
@@ -110,17 +108,16 @@ Do **NOT** include any extra keys or free-text outside the JSON object."""))
           ]
         }
         '''
-        if overview:
-            messages.append(SystemMessage(content=f"User Profile Overview:\n{overview}"))
-        if context_info:
-            messages.append(SystemMessage(content=f"Referenced Context:\n{context_info}"))
-        messages.append(HumanMessage(content=f"User Request:\n{workout_prompt}"))
-        messages.append(SystemMessage(content=f"Simple Example Output Format:\n{example_json}"))
+        messages.append(SystemMessage(content=f"The user's Profile Overview:\n{profile_assessment}"))
+        messages.append(HumanMessage(content=f"My request:\n{workout_prompt}"))
+        messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
+        messages.append(SystemMessage(content=f"AGREED PROPOSED PLAN:\n{plan_proposal_markdown}"))
+        messages.append(HumanMessage(content=f"Simple Example Output Format:\n{example_json}"))
         
         # Call the LLM
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             temperature=0.5,  # Lower temperature for more consistent output
             #response_format={"type": "json_object"}
         )

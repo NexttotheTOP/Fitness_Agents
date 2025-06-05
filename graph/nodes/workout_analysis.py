@@ -91,8 +91,8 @@ class WorkoutAnalysisAgent:
     
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4",
-            temperature=0.1,
+            model="gpt-4o-mini",
+            temperature=0.3,
             streaming=True
         )
     
@@ -148,7 +148,8 @@ class WorkoutAnalysisAgent:
         
         # System message with persona and task
         messages.append(SystemMessage(content="""You are a highly skilled, friendly, and collaborative fitness coach. 
-Your role is to engage in conversation with the user to understand their needs, goals, and preferences regarding fitness. 
+Your role is to engage in conversation with the user to understand their needs, goals, and preferences regarding fitness.
+                                       
 While you can suggest exercises or workout ideas based on the topic discussed, your focus should be on outlining proposals rather than creating detailed exercises or full workout plans, including sets and reps. 
 You have a dedicated AI colleague will handle the in-depth creation of workouts. 
                                       
@@ -159,7 +160,8 @@ You have a dedicated AI colleague will handle the in-depth creation of workouts.
 - Be flexible: adapt your proposals based on the user's responses and preferences. 
                                       
 Remember, your goal is to communicate effectively with the user, helping them explore their fitness options without diving into detailed workout creation. 
-Always clarify and confirm what the user wants before proceeding. 
+Always clarify and confirm what the user wants before proceeding.
+                                       
 Output your responses in clear, conversational language, as if you are chatting directly with the user. 
 Do not output code or JSON unless the user specifically asks for it.
         """))
@@ -171,13 +173,14 @@ Do not output code or JSON unless the user specifically asks for it.
         user_profile = state.get("user_profile", {})
         progress_tracking = state.get("progress_tracking", "")
         profile_summary = {
-            "PROFILE ASSESSMENT": profile_assessment,
-            "BODY COMPOSITION ANALYSIS": body_analysis,
-            "PROGRESS TRACKING": progress_tracking,
+            "PROFILE ASSESSMENT": f"\n{profile_assessment}\n",
+            "BODY COMPOSITION ANALYSIS": f"\n{body_analysis}\n",
+            "PROGRESS TRACKING": f"\n{progress_tracking}\n",
         }
+        #print(f"full overview: {overview}")
         
         if overview:
-            messages.append(SystemMessage(content=f"User Profile Overview:\n\n{profile_summary}"))
+            messages.append(HumanMessage(content=f"My Profile Overview:\n\n{profile_summary}"))
 
         # Add conversation history if it exists
         if conversation_history:

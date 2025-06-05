@@ -31,25 +31,14 @@ async def propose_workout_plan(state: StateForWorkoutApp):
     context_info = build_context_info(context, workout_prompt)
     overview = state.get("previous_complete_response", "")
 
-    # Build messages
     messages: List[Any] = []
 
-    # 1. Bring over relevant conversation history so the assistant continues naturally
-    conversation_history = state.get("analysis_conversation_history", []) or []
-    for msg in conversation_history:
-        if msg.get("role") == "user":
-            messages.append(HumanMessage(content=str(msg.get("content", ""))))
-        elif msg.get("role") == "assistant":
-            # Log the assistant messages as system messages to preserve context
-            messages.append(SystemMessage(content=str(msg.get("content", ""))))
+    messages.append(SystemMessage(content="""You are an expert fitness coach and personal trainer with extensive experience creating personalized workout plans. 
+You excel at designing safe, effective, and personalized workouts for your clients.
+                                  
+Your job is to take the agreed workout plan or structure that the analysis agent (your AI colleague) has provided and go into depth on each workout component, turning it into a highly detailed user-facing proposal.
 
-    # 2. Main instruction prompt – emphasise continuity & analysis focus
-    messages.append(SystemMessage(content="""
-You are a highly skilled, supportive fitness coach. 
-Your job is to take the agreed workout plan or structure that the analysis agent has provided and go into depth on each workout component, turning it into a detailed user-facing proposal.
-
-Convert the agreed structure into a detailed workout proposal focused primarily on the insights found in the analysis that follows.
-Present the plan in an engaging, clear, and motivating way, speaking directly to the user.
+Present the plan in an informative and clear way, speaking directly to the user.
                                   
 - Add rich descriptions for each part of the plan, including the purpose, benefits, and what to expect.
 - Explain your rationale for the choices you made, and highlight how the plan fits the user's goals, needs, and preferences.
@@ -59,27 +48,34 @@ Present the plan in an engaging, clear, and motivating way, speaking directly to
                                   
 You are participating in an ongoing conversation with the user. Do not greet the user again or restart the conversation. Assume continuity.
 """))
+    
+    messages.append(SystemMessage(content=f"CONVERSATION HISTORY START:"))
 
-    # 3. Supply analysis first (highest priority)
-    messages.append(SystemMessage(content=f"Analysis Summary (primary reference):\n{workout_profile_analysis}"))
 
-    # 4. Include profile & other context for reference (secondary)
+    conversation_history = state.get("analysis_conversation_history", []) or []
+    for msg in conversation_history:
+        if msg.get("role") == "user":
+            messages.append(HumanMessage(content=str(msg.get("content", ""))))
+        elif msg.get("role") == "assistant":
+            # Log the assistant messages as system messages to preserve context
+            messages.append(SystemMessage(content=str(msg.get("content", ""))))
+
+    messages.append(SystemMessage(content=f"CONVERSATION HISTORY END"))
+    messages.append(SystemMessage(content=f"Analysis Summary (yourprimary reference):\n{workout_profile_analysis}"))
+
     profile_summary = (
-        f"User profile metadata: {json.dumps(user_profile)}\n"
-        f"Profile assessment: {profile_assessment}\n"
-        f"Body analysis: {body_analysis}\n"
+        f"My Profile Assessment: {profile_assessment}\n"
     )
-    messages.append(SystemMessage(content=f"Additional Reference Data:\n{profile_summary}"))
+    messages.append(HumanMessage(profile_summary))
 
+    messages.append(HumanMessage(content=f"My Original Request:\n{workout_prompt}"))
     if context_info:
-        messages.append(SystemMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
+        messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
 
-    # 5. Original user request for completeness
-    messages.append(HumanMessage(content=f"User Request (original prompt):\n{workout_prompt}"))
 
     try:
         from langchain_openai import ChatOpenAI
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
         response_text = ""
         section_break = "\n\n--------------------------------\n\n"
         writer({"type": "token", "content": section_break})
