@@ -12,6 +12,10 @@ from graph.memory_store import get_most_recent_profile_overview
 from graph.chains.workout_router import route_by_workflow_type, should_continue_conversation
 from graph.nodes.human_feedback import await_human_feedback
 import re
+from langgraph.checkpoint.memory import MemorySaver
+    
+    
+checkpointer = MemorySaver()
 
 def create_workout_graph():
     """Create the workout graph with HITL conversation support."""
@@ -24,7 +28,7 @@ def create_workout_graph():
     workflow.add_node("propose_plan", propose_workout_plan)
     workflow.add_node("create_workout", create_workout_from_nlq)
 
-    # Add conditional edges for HITL conversation
+    # # Add conditional edges for HITL conversation
     # workflow.add_conditional_edges(
     #     "analyze_profile",
     #     should_continue_conversation,  # LLM router function
@@ -36,15 +40,16 @@ def create_workout_graph():
     
     # Linear flow after conversation is complete
     workflow.add_edge("analyze_profile", "human_feedback")
-    workflow.add_edge("human_feedback", "propose_plan")
+    # workflow.add_edge("human_feedback", "propose_plan") Command will do this in feedback node
     workflow.add_edge("propose_plan", "create_workout")
     workflow.add_edge("create_workout", END)
 
     # Set the entry point to profile analysis
     workflow.set_entry_point("analyze_profile")
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=checkpointer)
 
+# Create the app instance at module level
 app = create_workout_graph()
 
 def initialize_workout_state(
@@ -152,8 +157,7 @@ def initialize_workout_state(
         
         # Conversation history for HITL
         "analysis_conversation_history": [],
-        "pending_user_input": None,
-        "needs_user_input": False
+        "feedback": ""
     }
     
     print("\nInitial state created with profile data:")

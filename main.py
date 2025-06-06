@@ -53,6 +53,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from graph.model_graph import model_graph
 from graph.memory_store import get_previous_profile_overviews
 from graph.nodes.workout_variation import generate_workout_variation
+from langgraph.types import Command, Interrupt
 
 # Create FastAPI app
 api = FastAPI(title="Fitness Coach API")
@@ -821,26 +822,65 @@ async def workout_feedback(request: Request):
     data = await request.json()
     thread_id = data.get("thread_id")
     feedback = data.get("feedback")
+    print(f"THREAD ID feedback endpoint: {thread_id}")
 
-    # Retrieve the paused state
-    state = paused_workout_states.get(thread_id)
-    if not state:
-        return {"error": "No paused state found for this thread_id."}
-
-    # Update state with feedback
-    state["user_feedback"] = feedback
-    state["needs_user_input"] = False
-
-    # Resume the graph
     config = {
         "configurable": {
             "thread_id": thread_id,
-            "checkpoint_id": f"session_{thread_id}"
+            # "checkpoint_id": f"session_{thread_id}"
         }
     }
-    # You can stream or return the next result as needed
-    result = await workout_app.ainvoke(state, config=config)
-    return {"status": "resumed", "result": result}
+    print(f"FEEDBACK ===============================================:\n\n {feedback}")
+
+    async def stream_feedback():
+        try:
+            async for chunk_type, chunk in workout_app.astream(
+                Command(resume=feedback),
+                stream_mode=["updates", "custom"],
+                config=config
+            ):
+                # Handle Interrupt objects (pause for user feedback)
+                if chunk_type == "custom":
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        interrupt_obj = chunk["__interrupt__"]
+                        yield f"data: {json.dumps({'type': 'await_user_feedback', 'content': getattr(interrupt_obj, 'value', None)})}\n\n"
+                        continue
+                    if isinstance(chunk, dict):
+                        if chunk.get("type") == "await_feedback":
+                            paused_workout_states[thread_id] = chunk.copy()
+                        yield f"data: {json.dumps(chunk)}\n\n:\n\n"
+                        if chunk.get("type") == "progress":
+                            print("➡️  emitting progress:", chunk["content"])
+                    else:
+                        try:
+                            value, meta = chunk if isinstance(chunk, tuple) and len(chunk) == 2 else (chunk, {})
+                            if isinstance(value, dict):
+                                yield f"data: {json.dumps(value)}\n\n:\n\n"
+                                if value.get("type") == "progress":
+                                    print("➡️  emitting progress (node_stream):", value.get("content"))
+                            else:
+                                token = str(value)
+                                if token:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                        except Exception as _err:
+                            print("Error handling node_stream chunk:", _err)
+                elif chunk_type == "updates" and isinstance(chunk, dict):
+                    if "__interrupt__" in chunk:
+                        interrupt_obj = chunk["__interrupt__"]
+                        yield f"data: {json.dumps({'type': 'await_user_feedback', 'content': getattr(interrupt_obj, 'value', None)})}\n\n"
+                        continue
+                    yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            logging.error(f"Error in feedback streaming: {str(e)}")
+            logging.error(traceback.format_exc())
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        stream_feedback(),
+        media_type="text/event-stream"
+    )
 
 @api.post("/workout/create")
 async def create_workout(request: WorkoutNLQRequest):
@@ -853,11 +893,13 @@ async def create_workout(request: WorkoutNLQRequest):
             thread_id=request.thread_id,
             context=request.context  # Pass context to initialization
         )
+        print(f"thread ID create workout endpoint from state: {state['thread_id']}")
+        print(f"thread ID create workout endpoint from request: {request.thread_id}")
 
         config = {
             "configurable": {
                 "thread_id": state["thread_id"],
-                "checkpoint_id": f"session_{state['thread_id']}"
+                #"checkpoint_id": f"session_{state['thread_id']}"
             }
         }
         
@@ -869,35 +911,46 @@ async def create_workout(request: WorkoutNLQRequest):
                     stream_mode=["updates", "custom"],   
                     config=config
                 ):
-                    # Forward any custom or node_stream chunks (dicts) directly to the client
-                    if chunk_type == "custom" and isinstance(chunk, dict):
-                        # Store state if awaiting feedback
-                        if chunk.get("type") == "await_feedback":
-                            paused_workout_states[state["thread_id"]] = state.copy()
-                        yield f"data: {json.dumps(chunk)}\n\n:\n\n"  # colon line forces flush
-                        if chunk.get("type") == "progress":
-                            print("➡️  emitting progress:", chunk["content"])
-                    elif chunk_type == "updates" and isinstance(chunk, dict):
-                        # Handle state updates
-                        yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
-                    elif chunk_type == "custom":
-                        # node_stream yields are tuples: (value, metadata)
-                        try:
-                            value, meta = chunk if isinstance(chunk, tuple) and len(chunk) == 2 else (chunk, {})
+                    # Handle Interrupt objects (pause for user feedback)
+                    if chunk_type == "custom":
+                        # Interrupts are yielded as dicts with '__interrupt__' key
+                        if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                            interrupt_obj = chunk["__interrupt__"]
+                            yield f"data: {json.dumps({'type': 'await_user_feedback', 'content': getattr(interrupt_obj, 'value', None)})}\n\n"
+                            continue
+                        # Forward any custom or node_stream chunks (dicts) directly to the client
+                        if isinstance(chunk, dict):
+                            # # Store state if awaiting feedback
+                            if chunk.get("type") == "await_feedback":
+                                paused_workout_states[state["thread_id"]] = state.copy()
+                            yield f"data: {json.dumps(chunk)}\n\n:\n\n"  # colon line forces flush
+                            if chunk.get("type") == "progress":
+                                print("➡️  emitting progress:", chunk["content"])
+                        else:
+                            # node_stream yields are tuples: (value, metadata)
+                            try:
+                                value, meta = chunk if isinstance(chunk, tuple) and len(chunk) == 2 else (chunk, {})
 
-                            # If the yielded value is a dict with a `type`, forward as-is (e.g., progress)
-                            if isinstance(value, dict):
-                                yield f"data: {json.dumps(value)}\n\n:\n\n"
-                                if value.get("type") == "progress":
-                                    print("➡️  emitting progress (node_stream):", value.get("content"))
-                            else:
-                                # Otherwise treat as plain token
-                                token = str(value)
-                                if token:
-                                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-                        except Exception as _err:
-                            print("Error handling node_stream chunk:", _err)
-                
+                                # If the yielded value is a dict with a `type`, forward as-is (e.g., progress)
+                                if isinstance(value, dict):
+                                    yield f"data: {json.dumps(value)}\n\n:\n\n"
+                                    if value.get("type") == "progress":
+                                        print("➡️  emitting progress (node_stream):", value.get("content"))
+                                else:
+                                    # Otherwise treat as plain token
+                                    token = str(value)
+                                    if token:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                            except Exception as _err:
+                                print("Error handling node_stream chunk:", _err)
+                    elif chunk_type == "updates" and isinstance(chunk, dict):
+                        # Check for Interrupt in updates as well
+                        if "__interrupt__" in chunk:
+                            interrupt_obj = chunk["__interrupt__"]
+                            yield f"data: {json.dumps({'type': 'await_user_feedback', 'content': getattr(interrupt_obj, 'value', None)})}\n\n"
+                            continue
+                        # Safe to serialize
+                        yield f"data: {json.dumps({'type': 'update', 'content': chunk})}\n\n"
                 # Send completion signal
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
             except Exception as e:

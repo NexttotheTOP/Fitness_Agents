@@ -22,8 +22,9 @@ async def propose_workout_plan(state: StateForWorkoutApp):
     workout_profile_analysis = state.get("workout_profile_analysis", "")
     workout_prompt = state.get("workout_prompt", "")
     context = state.get("context", {})
+    feedback = state.get("feedback", "")
     
-    print(f"PROPOSAL NODE - State ID: {id(state)}")
+    print(f"PROPOSAL NODE - FEEDBACK: {feedback}")
     print(f"State keys: {list(state.keys())}")
     print(f"workout_profile_analysis: {state.get('workout_profile_analysis', 'NOT_FOUND')[:100]}...")
     
@@ -46,8 +47,15 @@ Present the plan in an informative and clear way, speaking directly to the user.
 - Make the proposal exciting and easy to understand, using clear language and a positive tone.
 - Output only user-facing text/markdown. Do not include any code or JSON.
                                   
+The user has provided feedback on the analysis and proposed plan. This feedback may be a simple button press (either "continue" or "redo") or custom written text. You should take this feedback into account when generating your response. At the beginning of your message, you are encouraged (but not required) to acknowledge or reference the user's feedback in a natural way.
+                                  
 You are participating in an ongoing conversation with the user. Do not greet the user again or restart the conversation. Assume continuity.
 """))
+    
+    profile_summary = (
+        f"The user's Profile Assessment: {profile_assessment}\n"
+    )
+    messages.append(SystemMessage(profile_summary))
     
     messages.append(SystemMessage(content=f"CONVERSATION HISTORY START:"))
 
@@ -61,25 +69,27 @@ You are participating in an ongoing conversation with the user. Do not greet the
             messages.append(SystemMessage(content=str(msg.get("content", ""))))
 
     messages.append(SystemMessage(content=f"CONVERSATION HISTORY END"))
-    messages.append(SystemMessage(content=f"Analysis Summary (yourprimary reference):\n{workout_profile_analysis}"))
-
-    profile_summary = (
-        f"My Profile Assessment: {profile_assessment}\n"
-    )
-    messages.append(HumanMessage(profile_summary))
 
     messages.append(HumanMessage(content=f"My Original Request:\n{workout_prompt}"))
     if context_info:
         messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
+
+    messages.append(SystemMessage(content=f"Analysis Summary (yourprimary reference):\n{workout_profile_analysis}"))
+    messages.append(SystemMessage(content=f"The user's feedback on the analysis:\n{feedback}"))
 
 
     try:
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
         response_text = ""
-        section_break = "\n\n--------------------------------\n\n"
-        writer({"type": "token", "content": section_break})
-        response_text += section_break
+        feedback_block = (
+            "\n\n--------------------------------\n\n"
+            f"> 💬 **User Feedback:**  \n"
+            f"> {feedback}\n"
+            "\n\n--------------------------------\n\n"
+        )
+        writer({"type": "token", "content": feedback_block})
+        response_text += feedback_block
         async for chunk in llm.astream(messages):
             token = getattr(chunk, "content", None)
             if token:

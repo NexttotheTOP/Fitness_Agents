@@ -139,8 +139,7 @@ class StateForWorkoutApp(TypedDict):
     
     # Conversation history for HITL
     analysis_conversation_history: Optional[List[Dict[str, str]]]  # Conversation during analysis phase
-    pending_user_input: Optional[str]  # Question waiting for user response
-    needs_user_input: Optional[bool]  # Flag indicating if user input is needed
+    feedback: Optional[str]  # Feedback from user
 
 
 
