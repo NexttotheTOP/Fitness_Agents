@@ -13,6 +13,6 @@ def await_human_feedback(state: StateForWorkoutApp):
     if feedback == "agree":
         return Command(goto="propose_plan", update={"feedback": feedback})
     elif feedback == "deny":
-        return Command(goto="analyze_profile", update={"feedback": feedback})
+        return Command(goto="analyze_profile", update={"feedback": "No I don't like this plan, re-generate."})
     else:
         return Command(goto="propose_plan", update={"feedback": feedback})

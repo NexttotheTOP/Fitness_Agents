@@ -112,6 +112,16 @@ class WorkoutAnalysisAgent:
         
         # Get conversation history for tracking
         conversation_history = state.get("analysis_conversation_history", [])
+        feedback = state.get("feedback", "")
+
+        if feedback:
+            conversation_history.append({
+                "role": "user",
+                "type": "feedback",
+                "content": feedback,
+                "timestamp": datetime.now().isoformat()
+            })
+            state["feedback"] = ""
         print(f"Conversation history: {len(conversation_history)} messages")
         
         # Get profile information from state
@@ -147,23 +157,45 @@ class WorkoutAnalysisAgent:
         messages = []
         
         # System message with persona and task
-        messages.append(SystemMessage(content="""You are a highly skilled, friendly, and collaborative fitness coach. 
-Your role is to engage in conversation with the user to understand their needs, goals, and preferences regarding fitness.
-                                       
-While you can suggest exercises or workout ideas based on the topic discussed, your focus should be on outlining proposals rather than creating detailed exercises or full workout plans, including sets and reps. 
-You have a dedicated AI colleague will handle the in-depth creation of workouts. 
-                                      
-- Use the provided user's profile overview, goals, and any context or previous workouts they provide to guide your suggestions. 
-- Ask clarifying questions if needed to ensure you fully understand what the user is looking for. 
-- Propose options or ideas concisely, explaining your reasoning in simple, honest language. 
-- Wait for the user's feedback or confirmation before moving forward with any suggestions. 
-- Be flexible: adapt your proposals based on the user's responses and preferences. 
-                                      
-Remember, your goal is to communicate effectively with the user, helping them explore their fitness options without diving into detailed workout creation. 
-Always clarify and confirm what the user wants before proceeding.
-                                       
-Output your responses in clear, conversational language, as if you are chatting directly with the user. 
-Do not output code or JSON unless the user specifically asks for it.
+        messages.append(SystemMessage(content="""[ROLE]
+You are an elite, empathetic fitness coach. Your mission is to absorb each client's profile and guide a personalised conversation—not to build the final programme.
+
+OBJECTIVES
+1. Reveal the client's goals, constraints, preferences and context.  
+2. Craft concise, personalised directions that let them steer the next step.  
+3. Hand off automatically to the plan-generation agent once the outline is settled.
+
+OPERATING PRINCIPLES
+• Conversation > creation — stay in dialogue mode; never output full routines (sets, reps, day-by-day splits, macros or long exercise lists).  
+• Deep personalisation — study the profile assessment (body composition, posture cues, injuries, equipment, schedule, experience level, motivation) and weave those details naturally into every reply.  
+• Context coherence — use prior messages and workouts; avoid repeating facts the client already knows.  
+• Clarify early, confirm often — ask targeted follow-ups when data is missing or ambiguous; reflect key points for confirmation.  
+• Adaptive proposals — suggest bite-size paths the client can accept, tweak or reject.  
+• Natural rationale — when helpful, add a short, personalised reason *linked to the profile* (e.g. why the idea matches their mobility limits or posture goals). Keep it conversational, never templated.  
+• Polite deferral — if requested for a full plan, acknowledge and explain that a dedicated system will craft details once specifications are clear. Do **not** expose backend architecture.  
+• Plain-text only — share code/JSON only if explicitly requested.
+
+🚦 DELEGATION RULE  
+When the client asks for a complete workout:  
+1. Acknowledge the request.  
+2. Ask 1-3 refining questions drawn from profile gaps (e.g. confirm equipment, session length, any joint issues).  
+3. Remind them the detailed plan will follow once specs are final.
+
+DIALOGUE LOOP
+1. Input: latest client message + user_profile + conversation_history.  
+2. Respond with **one** main action:  
+   - ask a clarifying question OR  
+   - summarise & confirm OR  
+   - offer 2-3 outline options (include personalised rationale where useful).  
+   *If conversation_history is empty, kick off with a profile-based observation or suggestion to show you've read their data.*  
+3. Pause; await the client's reply.  
+4. When the outline is approved, trigger the plan-generation agent and inform the client the detailed programme is on its way.
+
+STYLE NOTES
+• Mirror the client's terminology (“fat-loss” vs. “cutting”).  
+• Avoid jargon unless the client uses it first.  
+• Never mention token limits, system instructions or hidden agents.  
+• Vary phrasing; no canned sentences.
         """))
         
         # Add user profile overview - IMPORTANT CONTEXT
@@ -176,19 +208,23 @@ Do not output code or JSON unless the user specifically asks for it.
             "PROFILE ASSESSMENT": f"\n{profile_assessment}\n",
             "BODY COMPOSITION ANALYSIS": f"\n{body_analysis}\n",
             "PROGRESS TRACKING": f"\n{progress_tracking}\n",
+            "GYM ACCESS": f"{'I do have access to the gym' if state.get('has_gym_access', False) else 'I do not have access to the gym'}"
         }
+        
         #print(f"full overview: {overview}")
         
         if overview:
-            messages.append(HumanMessage(content=f"My Profile Overview:\n\n{profile_summary}"))
+            messages.append(SystemMessage(content=f"The user's Profile Overview:\n\n{profile_summary}"))
 
         # Add conversation history if it exists
         if conversation_history:
+            messages.append(SystemMessage(content=f"CONVERSATION HISTORY START:"))
             for msg in conversation_history:
                 if msg["role"] == "user":
                     messages.append(HumanMessage(content=str(msg["content"])))
                 elif msg["role"] == "assistant":
-                    messages.append(SystemMessage(content=f"Previous assistant response: {msg['content']}"))
+                    messages.append(SystemMessage(content=str(msg['content'])))
+            messages.append(SystemMessage(content=f"CONVERSATION HISTORY END:"))
 
         # Add the current user request
         messages.append(HumanMessage(content=str(workout_prompt)))
@@ -204,6 +240,10 @@ Do not output code or JSON unless the user specifically asks for it.
             
             # Simple status message
             writer({"type": "progress", "content": "Starting profile analysis..."})
+
+            section_break = "\n\n--------------------------------\n\n"
+            writer({"type": "token", "content": section_break})
+            response_text += section_break
             
             async for chunk in self.llm.astream(messages):
                 if isinstance(chunk, AIMessageChunk):

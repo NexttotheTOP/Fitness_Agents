@@ -140,6 +140,7 @@ class StateForWorkoutApp(TypedDict):
     # Conversation history for HITL
     analysis_conversation_history: Optional[List[Dict[str, str]]]  # Conversation during analysis phase
     feedback: Optional[str]  # Feedback from user
+    has_gym_access: Optional[bool]  # Whether the user has gym access
 
 
 

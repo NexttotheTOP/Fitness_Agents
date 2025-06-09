@@ -58,7 +58,8 @@ def initialize_workout_state(
     workflow_type: str = "create",
     original_workout: Optional[Dict] = None,
     thread_id: Optional[str] = None,
-    context: Optional[Dict[str, List[Dict[str, Any]]]] = None  # Add context parameter
+    context: Optional[Dict[str, List[Dict[str, Any]]]] = None,  # Add context parameter
+    has_gym_access: Optional[bool] = False
 ) -> StateForWorkoutApp:
     """
     Initialize state for workout app
@@ -157,7 +158,8 @@ def initialize_workout_state(
         
         # Conversation history for HITL
         "analysis_conversation_history": [],
-        "feedback": ""
+        "feedback": "",
+        "has_gym_access": has_gym_access
     }
     
     print("\nInitial state created with profile data:")

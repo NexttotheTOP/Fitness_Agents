@@ -484,6 +484,7 @@ class FitnessProfileRequest(BaseModel):
     fitness_goals: list[str]
     dietary_preferences: list[str]
     health_restrictions: list[str]
+    body_issues: str
     body_type: Optional[str] = None  # Analysis result of body type
     imagePaths: Optional[Dict[str, List[str]]] = None  # Structured image paths with front, side, back views
 
@@ -504,6 +505,7 @@ class WorkoutNLQRequest(BaseModel):
     prompt: str
     thread_id: Optional[str] = None
     context: Optional[Dict[str, List[Dict[str, Any]]]] = None  # Add context field
+    has_gym_access: Optional[bool] = False
 
 class WorkoutVariationRequest(BaseModel):
     user_id: str
@@ -891,7 +893,8 @@ async def create_workout(request: WorkoutNLQRequest):
             user_id=request.user_id,
             workout_prompt=request.prompt,
             thread_id=request.thread_id,
-            context=request.context  # Pass context to initialization
+            context=request.context,  # Pass context to initialization
+            has_gym_access=request.has_gym_access
         )
         print(f"thread ID create workout endpoint from state: {state['thread_id']}")
         print(f"thread ID create workout endpoint from request: {request.thread_id}")

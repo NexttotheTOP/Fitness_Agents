@@ -243,14 +243,22 @@ def parse_profile_overview(overview_text: str) -> Dict[str, str]:
         # Extract the heading from the content
         heading_match = re.match(r'##\s*(.*?)(?:\n|\r\n)', section_content)
         if not heading_match:
-            print(f"Found a section but couldn't extract heading: {section_content[:50]}...")
-            continue
-            
-        heading = heading_match.group(1).strip()
-        print(f"Found section with heading: '{heading}'")
-        
-        # Extract the content by removing the heading line
-        content = re.sub(r'^##\s*.*?(?:\n|\r\n)', '', section_content, 1).strip()
+            # Try to handle the case where the line starts with '---' followed by '##'
+            alt_heading_match = re.match(r'-{3,}\s*##\s*(.*?)(?:\n|\r\n)', section_content)
+            if alt_heading_match:
+                heading = alt_heading_match.group(1).strip()
+                print(f"Found section with heading (after dashes): '{heading}'")
+                # Remove the leading dashes and whitespace from the section_content for content extraction
+                section_content_clean = re.sub(r'^-{3,}\s*', '', section_content, 1)
+                content = re.sub(r'^##\s*.*?(?:\n|\r\n)', '', section_content_clean, 1).strip()
+            else:
+                print(f"Found a section but couldn't extract heading: {section_content[:50]}...")
+                continue
+        else:
+            heading = heading_match.group(1).strip()
+            print(f"Found section with heading: '{heading}'")
+            # Extract the content by removing the heading line
+            content = re.sub(r'^##\s*.*?(?:\n|\r\n)', '', section_content, 1).strip()
         
         # Match the heading to our expected sections
         if re.search(r'profile\s*assessment', heading, re.IGNORECASE):
