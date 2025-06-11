@@ -9,7 +9,7 @@ import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from graph.memory_store import get_most_recent_profile_overview
-from graph.chains.workout_router import route_by_workflow_type, should_continue_conversation
+from graph.chains.workout_router import conversation_router_node
 from graph.nodes.human_feedback import await_human_feedback
 import re
 from langgraph.checkpoint.memory import MemorySaver
@@ -27,20 +27,19 @@ def create_workout_graph():
     workflow.add_node("human_feedback", await_human_feedback)
     workflow.add_node("propose_plan", propose_workout_plan)
     workflow.add_node("create_workout", create_workout_from_nlq)
-
-    # # Add conditional edges for HITL conversation
-    # workflow.add_conditional_edges(
-    #     "analyze_profile",
-    #     should_continue_conversation,  # LLM router function
-    #     {
-    #         "continue": "analyze_profile",  # Loop back for more conversation
-    #         "proceed": "propose_plan"       # Move to workout planning
-    #     }
-    # )
+    workflow.add_node("conversation_router", conversation_router_node)
     
     # Linear flow after conversation is complete
     workflow.add_edge("analyze_profile", "human_feedback")
-    # workflow.add_edge("human_feedback", "propose_plan") Command will do this in feedback node
+    workflow.add_edge("human_feedback", "conversation_router")
+    workflow.add_conditional_edges(
+        "conversation_router",
+        lambda state: state["decision"],  # Use the output of the node for routing
+        {
+            "continue": "analyze_profile",
+            "proceed": "propose_plan"
+        }
+    )
     workflow.add_edge("propose_plan", "create_workout")
     workflow.add_edge("create_workout", END)
 

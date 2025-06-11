@@ -42,6 +42,7 @@ Instructions:
 - Use the plan proposal below as your main source of truth for creating the detailed workouts and or exercises.
 - Strictly follow the required JSON schema and include all required fields (name, description, exercises, sets, reps, rest, etc.).
 - If the proposal is missing details (e.g., rest times, tempo, cues), fill them in with best practices for the user's goals and level.
+- Make sure to include all the mentioned workouts and or exercises in the proposal.
 
 Focus on creating highly detailed and informative content:
 - Write comprehensive workout descriptions that explain the purpose, benefits, and special considerations
@@ -53,12 +54,10 @@ Focus on creating highly detailed and informative content:
 
 Output format:
 - Always return a single JSON object with both `workouts` and `exercises` keys
-- The `workouts` array should contain complete workout definitions
-- The `exercises` array should contain any standalone exercises
+- The `workouts` array should contain complete workout definitions (core sessions only).
+- The `exercises` array should contain any standalone exercises—including all warm-up, cooldown, mobility, and stretching items.  
 - Do not use ranges for the number of sets or reps. Use specific numbers.
-- Do not include any free-text outside the JSON object.
-
-Do **NOT** include any extra keys or free-text outside the JSON object."""))
+"""))
         
         example_json = '''
         {
@@ -108,11 +107,8 @@ Do **NOT** include any extra keys or free-text outside the JSON object."""))
           ]
         }
         '''
-        messages.append(SystemMessage(content=f"The user's Profile Overview:\n{profile_assessment}"))
-        messages.append(HumanMessage(content=f"My request:\n{workout_prompt}"))
-        messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
         messages.append(SystemMessage(content=f"AGREED PROPOSED PLAN:\n{plan_proposal_markdown}"))
-        messages.append(HumanMessage(content=f"Simple Example Output Format:\n{example_json}"))
+        messages.append(SystemMessage(content=f"Simple Example Output Format:\n{example_json}"))
         
         # Call the LLM
         from langchain_openai import ChatOpenAI

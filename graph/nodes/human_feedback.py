@@ -10,9 +10,5 @@ def await_human_feedback(state: StateForWorkoutApp):
     print(f"HUMAN_FEEDBACK NODE - feedback: {feedback}")
     state["feedback"] = feedback
     
-    if feedback == "agree":
-        return Command(goto="propose_plan", update={"feedback": feedback})
-    elif feedback == "deny":
-        return Command(goto="analyze_profile", update={"feedback": "No I don't like this plan, re-generate."})
-    else:
-        return Command(goto="propose_plan", update={"feedback": feedback})
+
+    return Command(goto="conversation_router", update={"feedback": feedback})

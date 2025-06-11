@@ -24,7 +24,7 @@ def build_context_info(context: dict, workout_prompt: str = "") -> str:
     if not context_exercises and not context_workouts:
         return ""
     
-    context_info = "The user has referenced the following exercises and workouts. Consider these when analyzing for limitations and restrictions:\n\n"
+    context_info = "I referenced the following exercises and workouts.\n\n"
     
     if context_exercises:
         context_info += "Referenced Exercises:\n"
@@ -158,38 +158,36 @@ class WorkoutAnalysisAgent:
         
         # System message with persona and task
         messages.append(SystemMessage(content="""[ROLE]
-You are an elite, empathetic fitness coach. Your mission is to absorb each client's profile and guide a personalised conversation—not to build the final programme.
+You are an elite, empathetic fitness coach. Your mission is to absorb each client's profile and body analysis and guide a personalised conversation—not to build the final programme. Rather to explore all options and make suggestions.
 
 OBJECTIVES
-1. Reveal the client's goals, constraints, preferences and context.  
-2. Craft concise, personalised directions that let them steer the next step.  
-3. Hand off automatically to the plan-generation agent once the outline is settled.
+• Absorb each client's context.  
+• Co-create the outline of their fitness approach.
+• Signal when the spec is “ready for hand-off”.
 
 OPERATING PRINCIPLES
-• Conversation > creation — stay in dialogue mode; never output full routines (sets, reps, day-by-day splits, macros or long exercise lists).  
-• Deep personalisation — study the profile assessment (body composition, posture cues, injuries, equipment, schedule, experience level, motivation) and weave those details naturally into every reply.  
-• Context coherence — use prior messages and workouts; avoid repeating facts the client already knows.  
-• Clarify early, confirm often — ask targeted follow-ups when data is missing or ambiguous; reflect key points for confirmation.  
-• Adaptive proposals — suggest bite-size paths the client can accept, tweak or reject.  
+• Conversation > creation — stay in dialogue mode; never deliver full routines (sets, reps, day-by-day splits, macros).  
+• Deep personalisation — weave in profile details naturally; **never ask for info already provided**.  
+• Context coherence — use prior conversation history; avoid repeating yourself.  
+• Clarify early, ask targeted follow-ups when data is missing or ambiguous; reflect key points for confirmation.  
+• Adaptive proposals — suggest multiple paths the client can accept, tweak or reject.  
 • Natural rationale — when helpful, add a short, personalised reason *linked to the profile* (e.g. why the idea matches their mobility limits or posture goals). Keep it conversational, never templated.  
 • Polite deferral — if requested for a full plan, acknowledge and explain that a dedicated system will craft details once specifications are clear. Do **not** expose backend architecture.  
 • Plain-text only — share code/JSON only if explicitly requested.
 
 🚦 DELEGATION RULE  
-When the client asks for a complete workout:  
+When the client asks to create a workout or exercise:  
 1. Acknowledge the request.  
-2. Ask 1-3 refining questions drawn from profile gaps (e.g. confirm equipment, session length, any joint issues).  
+2. Ask 1-3 refining questions drawn from profile gaps (e.g. session length, ...).  
 3. Remind them the detailed plan will follow once specs are final.
 
-DIALOGUE LOOP
-1. Input: latest client message + user_profile + conversation_history.  
-2. Respond with **one** main action:  
-   - ask a clarifying question OR  
-   - summarise & confirm OR  
-   - offer 2-3 outline options (include personalised rationale where useful).  
-   *If conversation_history is empty, kick off with a profile-based observation or suggestion to show you've read their data.*  
-3. Pause; await the client's reply.  
-4. When the outline is approved, trigger the plan-generation agent and inform the client the detailed programme is on its way.
+HOW TO INTERACT
+Think of each reply as a single, helpful move in a friendly chat. Decide what would serve the client best **right now**:  
+— Maybe you ask a pinpoint question to unlock the one piece of info still missing.  
+— Maybe you pause to reflect what you’ve heard so far, making sure you’re both aligned.  
+— Or maybe you float a couple of personalised next-step ideas and explain why they fit.  
+Pick whichever of those feels most useful in the moment; there’s no rigid cycle.
+
 
 STYLE NOTES
 • Mirror the client's terminology (“fat-loss” vs. “cutting”).  
@@ -204,17 +202,18 @@ STYLE NOTES
         body_analysis = state.get("body_analysis", "")
         user_profile = state.get("user_profile", {})
         progress_tracking = state.get("progress_tracking", "")
-        profile_summary = {
-            "PROFILE ASSESSMENT": f"\n{profile_assessment}\n",
-            "BODY COMPOSITION ANALYSIS": f"\n{body_analysis}\n",
-            "PROGRESS TRACKING": f"\n{progress_tracking}\n",
-            "GYM ACCESS": f"{'I do have access to the gym' if state.get('has_gym_access', False) else 'I do not have access to the gym'}"
-        }
+        # profile_summary = {
+        #     "PROFILE ASSESSMENT": f"\n{profile_assessment}\n",
+        #     "BODY COMPOSITION ANALYSIS": f"\n{body_analysis}\n",
+        #     "PROGRESS TRACKING": f"\n{progress_tracking}\n",
+        # }
         
         #print(f"full overview: {overview}")
         
         if overview:
-            messages.append(SystemMessage(content=f"The user's Profile Overview:\n\n{profile_summary}"))
+            messages.append(HumanMessage(content=f"My Profile Overview:\n\n{overview}"))
+        if not conversation_history:
+            messages.append(SystemMessage(content=f"GYM ACCESS: {'The user has access to the gym' if state.get('has_gym_access', False) else 'The user does not have access to the gym'}"))
 
         # Add conversation history if it exists
         if conversation_history:
@@ -224,26 +223,39 @@ STYLE NOTES
                     messages.append(HumanMessage(content=str(msg["content"])))
                 elif msg["role"] == "assistant":
                     messages.append(SystemMessage(content=str(msg['content'])))
-            messages.append(SystemMessage(content=f"CONVERSATION HISTORY END:"))
 
-        # Add the current user request
-        messages.append(HumanMessage(content=str(workout_prompt)))
-        
-        if context_info:
-            messages.append(SystemMessage(content=f"""Referenced Context:{context_info}"""))
+        # Add the current user request and context info only if no conversation history exists
+        if not conversation_history:
+            messages.append(HumanMessage(content=str(workout_prompt)))
+            conversation_history.append({
+                "role": "user",
+                "content": workout_prompt,  # Use the actual user input
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            if context_info:
+                messages.append(HumanMessage(content=f"""Referenced Context\n\n{context_info}"""))
+                conversation_history.append({
+                    "role": "user",
+                    "content": f"""Referenced Context\n\n{context_info}""",
+                    "timestamp": datetime.now().isoformat()
+                })
         
         print("\nCalling LLM for analysis with structured messages...")
         
         try:
             # Call the LLM with message structure
-            response_text = ""
-            
-            # Simple status message
-            writer({"type": "progress", "content": "Starting profile analysis..."})
+            writer({"type": "progress", "content": "Analysis Agent is thinking..."})
 
-            section_break = "\n\n--------------------------------\n\n"
-            writer({"type": "token", "content": section_break})
-            response_text += section_break
+            response_text = ""
+            if feedback and feedback != "":   
+                feedback_block = (
+                    "\n\n--------------------------------\n\n"
+                    f"> 💬 **User Feedback:**  \n"
+                    f"> {feedback}\n"
+                    "\n\n--------------------------------\n\n"
+                )
+                writer({"type": "token", "content": feedback_block})
             
             async for chunk in self.llm.astream(messages):
                 if isinstance(chunk, AIMessageChunk):
@@ -255,13 +267,7 @@ STYLE NOTES
                     writer({"type": "token", "content": token})
                     response_text += token
             
-            # Update conversation history
-            conversation_history.append({
-                "role": "user",
-                "content": workout_prompt,  # Use the actual user input
-                "timestamp": datetime.now().isoformat()
-            })
-            
+
             conversation_history.append({
                 "role": "assistant",
                 "content": response_text,

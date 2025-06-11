@@ -22,6 +22,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 # Load environment variables
 load_dotenv()
 
+
+
 class ProfileAgent:
     def __init__(self):
         # Standard text model for non-visual analysis
@@ -40,7 +42,7 @@ class ProfileAgent:
             self.use_claude = False
             # Vision model for body composition analysis (fallback to OpenAI)
             self.vision_model = ChatOpenAI(
-                model="gpt-4o",
+                model="gpt-o3",
                 temperature=0.1,
                 max_tokens=4096,
                 streaming=True,
@@ -282,6 +284,24 @@ class ProfileAgent:
         user_profile["image_timestamps"] = image_timestamps
         
         return formatted_images
+    
+    def format_user_profile_for_prompt(self, user_profile: dict) -> str:
+        """Format the user profile into a readable markdown summary for LLM context, omitting all photo-related fields."""
+        # Fields to skip (internal/technical and photo-related)
+        skip_fields = {"user_id", "thread_id", "imagePaths", "image_timestamps"}
+        lines = []
+        for key, value in user_profile.items():
+            if key in skip_fields:
+                continue
+            # Format lists
+            if isinstance(value, list):
+                value_str = ", ".join(str(v) for v in value) if value else "None"
+            else:
+                value_str = str(value) if value is not None else "None"
+            # Prettify key
+            pretty_key = key.replace("_", " ").title()
+            lines.append(f"- **{pretty_key}**: {value_str}")
+        return "\n".join(lines)
     
     async def _analyze_body_composition(self, user_profile):
         """Analyze body composition using a vision model and user input - now streams tokens"""
@@ -660,111 +680,6 @@ List every relevant focus area—cover all that matter, no artificial limit. Sta
         # Signal completion
         writer({"type": "step", "content": "Profile assessment completed."})
 
-    async def _call_with_body_analysis(self, state: WorkoutState) -> WorkoutState:
-        """Process state with body analysis using vision model"""
-        # Collect the body analysis tokens from the streaming generator
-        full_body_analysis = ""
-        async for token in self._analyze_body_composition(state["user_profile"]):
-            if token:
-                full_body_analysis += token
-        
-        # Update the state with body analysis
-        if full_body_analysis and len(full_body_analysis) > 50:
-            state["body_analysis"] = full_body_analysis
-        
-            # Extract body type if present
-            if "body type:" in full_body_analysis.lower():
-                body_type_part = full_body_analysis.lower().split("body type:")[1].strip()
-                body_type = body_type_part.split("\n")[0].strip()
-                state["user_profile"]["body_type"] = body_type
-            elif "somatotype:" in full_body_analysis.lower():
-                body_type_part = full_body_analysis.lower().split("somatotype:")[1].strip()
-                body_type = body_type_part.split("\n")[0].strip()
-                state["user_profile"]["body_type"] = body_type
-        
-        # Get previous data if available
-        previous_profile_assessment = None
-        previous_body_analysis = None
-        if state.get("previous_sections"):
-            previous_profile_assessment = state["previous_sections"].get("profile_assessment", "")
-            previous_body_analysis = state["previous_sections"].get("body_analysis", "")
-        
-        # Create full profile analysis with previous data
-        profile_prompt = f"""[Persona]  
-You are an elite-veteran fitness profile analyst and sports-nutrition strategist. Your hallmark is rigorous, transparent reasoning: you show clients not just *what* you see, but *why* it matters and *how* you arrived there, all in casual natural language.
-
-[Context]  
-Two system messages will follow:  
-
-• **CURRENT CLIENT PROFILE** – JSON (age, gender, height, weight, goals, activity level, lifestyle notes, etc.)  
-• **CURRENT BODY ANALYSIS** – concise markdown summary from the Body-Composition Agent  
-
-Assume missing fields are unavailable. Do **not** quote these messages verbatim.
-
-[Mission]  
-Produce a comprehensive, professional report that:  
-1. Paints a clear lists tyle user profile overview for future reference.
-2. Explains, step-by-step, how that status aligns—or clashes—with stated goals.  
-3. Sets realistic timelines and tightly focused priorities for the next coaching block.  
-4. Makes your reasoning explicit: whenever you draw a conclusion, briefly cite the specific data or visual cue that led you there.  
-If a detail is uncertain, label it **Indeterminate**—never guess.
-
-[Report Layout] — one H2 + six H3 sections  
-
-## Profile Assessment               ← only H2  
-
-### Current Fitness Snapshot  
-1–2 medium paragraphs covering body-comp metrics, vitals (if provided), and functional capacity. After each numeric value, add a parenthetical *confidence tag*—**High**, **Moderate**, or **Low**. Bold every number; mark missing ones **N/A**.
-
-### Movement & Posture  
-Bullets summarising key observations: spinal alignment, limb symmetry, mobility restrictions. For each item, append “(Reason: …)” to show the visual or metric that triggered the call-out. Tag < 75 %-certain items as **Possible** or **Indeterminate**.
-
-### Goal Alignment & Readiness  
-For every stated goal, create a two-column mini-table: **Supports Progress** | **Potential Roadblock**. Under each column give one factor, then add a one-line rationale.
-
-### Realistic Timeframes  
-For each primary goal, give a **Best-Case ETA** and **Likely ETA**, plus the reasoning (e.g., “based on current weekly body-fat change of ~0.4 %”). If prediction is unsafe, write **Indeterminate**.
-
-### Key Focus Areas & Action Steps  
-List every relevant focus area—cover all that matter, no artificial limit. Start each bullet with a relevant icon (e.g., ✅ or ⚠️) 
-• *Why it matters* – one sentence tied to physiology or behaviour.  
-• *Immediate tactic* – a concrete action that can start this week.  
-• *Metric to watch* – the single number or cue that proves progress.
-
-[Style Guide]  
-• Professional, direct and honest.  
-• Reveal your reasoning in casual natural language 
-• Bold all measurements.  
-• One blank line between major sections.  
-• Use markdown tables wherever tabular data is indicated; align columns with pipes (`|`).
-• Explain all your reasoning in a natural, conversational tone—use brief parenthetical clarifiers where helpful, but keep it client-friendly.  
-• Mix concise bullets with occasional fuller sentences; stay informative without padding.  
-• Speak directly to the client—use **you / your** instead of third-person wording.  
-• Output in markdown format and end with three dashes (`---`) on its own line—nothing after.
-        """
-
-        user_profile = state["user_profile"]
-
-
-        # Initialize message list for profile assessment
-        messages = []
-
-        messages.append(SystemMessage(content=profile_prompt))
-        messages.append(SystemMessage(content=f"The user's Profile:\n\n{user_profile}"))
-        if full_body_analysis:
-            messages.append(SystemMessage(content=f"The user's Body Composition Analysis:\n\n{full_body_analysis}"))
-
-        if previous_profile_assessment:
-            messages.append(SystemMessage(content=f"Previous Profile Assessment:\n\n{previous_profile_assessment}"))
-
-        if previous_body_analysis:
-            messages.append(SystemMessage(content=f"Previous Body Composition Analysis:\n{previous_body_analysis}"))
-
-        response = await self.llm.ainvoke(messages)
-        if full_body_analysis:
-            state["user_profile"]["body_analysis"] = full_body_analysis
-        state["user_profile"] = response.content
-        return state
 
     def __call__(self, state: WorkoutState) -> WorkoutState:
         """Update or validate the user profile, preserving the original dictionary structure"""
@@ -786,21 +701,6 @@ List every relevant focus area—cover all that matter, no artificial limit. Sta
         # Check if we have body analysis data in the state
         body_analysis = state.get("body_analysis")
     
-        # If we have body photos but no analysis yet, we need to analyze
-        # but _analyze_body_composition is now a streaming generator, 
-        # so we use _call_with_body_analysis as a helper (which is synchronous)
-        if has_body_photos and not body_analysis:
-            # For synchronous contexts, use the helper method
-            import asyncio
-            try:
-                # Use an event loop to run the async method
-                loop = asyncio.get_event_loop()
-                state = loop.run_until_complete(self._call_with_body_analysis(state))
-                body_analysis = state.get("body_analysis")
-            except Exception as e:
-                print(f"Error in synchronous body analysis: {e}")
-                # Continue without body analysis
-        
         # Create profile analysis with or without body analysis
         profile_prompt = f"""[Persona]  
 You are an elite-veteran fitness profile analyst and sports-nutrition strategist. Your hallmark is rigorous, transparent reasoning: you show clients not just *what* you see, but *why* it matters and *how* you arrived there, all in casual natural language.
@@ -860,11 +760,17 @@ List every relevant focus area—cover all that matter, no artificial limit. Sta
 
         # Initialize message list for profile assessment
         messages = []
+        print(f" ==================== previous_profile_assessment: {previous_profile_assessment}")
+        print(f" ==================== previous_body_analysis: {previous_body_analysis}")
+        print(f" ==================== state: {state}")
+        print(f" ==================== has complete previous overview: {state.get('previous_complete_response', '')}")
+        print(f" ==================== previous_sections: {state.get('previous_sections', '')}")
 
+        formatted_profile = self.format_user_profile_for_prompt(user_profile)
         messages.append(SystemMessage(content=profile_prompt))
-        messages.append(SystemMessage(content=f"The user's Profile:\n\n{user_profile}"))
+        messages.append(HumanMessage(content=f"My Profile:\n\n{formatted_profile}"))
         if body_analysis:
-            messages.append(SystemMessage(content=f"The user's Body Composition Analysis:\n\n{body_analysis}"))
+            messages.append(HumanMessage(content=f"My Body Composition Analysis:\n\n{body_analysis}"))
 
         if previous_profile_assessment:
             messages.append(SystemMessage(content=f"Previous Profile Assessment:\n\n{previous_profile_assessment}"))
@@ -1152,19 +1058,19 @@ SAFETY & DATA INTEGRITY
         messages = []
 
         messages.append(SystemMessage(content=diet_prompt))
-        messages.append(SystemMessage(content=f"The user's Profile Assessment:\n\n{user_profile}"))
+        messages.append(HumanMessage(content=f"My Profile Assessment:\n\n{user_profile}"))
         if body_analysis:
-            messages.append(SystemMessage(content=f"The user's Body Composition Analysis:\n\n{body_analysis}"))
+            messages.append(HumanMessage(content=f"My Body Composition Analysis:\n\n{body_analysis}"))
 
         if previous_dietary_plan:
             messages.append(SystemMessage(content=f"Previous Generated Dietary Plan:\n\n{previous_dietary_plan}"))
 
-        print("\n\n==========================================")
-        print(f"previous_dietary_plan: {previous_dietary_plan}")
-        print(f"previous_sections: {state['previous_sections']}")
-        print(f"previous_sections content raw: {state['previous_sections'].get('dietary_plan')}")
-        print(f"previous_complete_response: {state.get('previous_complete_response')}")
-        print("==========================================\n\n")
+        # print("\n\n==========================================")
+        # print(f"previous_dietary_plan: {previous_dietary_plan}")
+        # print(f"previous_sections: {state['previous_sections']}")
+        # #print(f"previous_sections content raw: {state['previous_sections'].get('dietary_plan')}")
+        # print(f"previous_complete_response: {state.get('previous_complete_response')}")
+        # print("==========================================\n\n")
         
         response = self.llm.invoke(messages)
         state["dietary_state"].content = response.content
@@ -1201,61 +1107,41 @@ class FitnessAgent:
         if state.get("structured_user_profile") and state.get("previous_complete_response"):
             previous_user_profile = json.dumps(state.get("structured_user_profile"))
         
-        fitness_prompt = f"""Personalized Fitness Strategy Agent
-Role & Expertise
-You are an elite Personal Fitness Strategist and Training Architect with 20+ years coaching Olympic athletes, professional teams, and individuals like the user. Your role is to analyze their unique data and create a personalized strategic framework that speaks directly to them—not generic advice, but intelligent architecture tailored specifically to their body, lifestyle, and goals.
+        fitness_prompt = f"""[ROLE & EXPERTISE]
+You are an elite Personal Fitness Strategist and guide with 20+ years coaching individuals as personalized as possible. Your role is to analyze their data and create a personalised strategic framework that speaks directly to them.
+
+You are responsible for creating personalised intelligent architecture tailored specifically to their profile, body, lifestyle, and goals.
+
 Your expertise spans:
+- Periodization theory and training systems design
+- Movement quality assessment and corrective strategies
+- Physiological adaptation mechanisms and recovery science
+- Performance psychology and behavior change
+- Evidence-based training methodologies
 
-Periodization theory and training systems design
-Movement quality assessment and corrective strategies
-Physiological adaptation mechanisms and recovery science
-Performance psychology and behavior change
-Evidence-based training methodologies
-
-Context & Data Integration
+[INPUT]
 You will receive three analytical documents about this specific user:
 
-Their Profile Assessment - Demographics, lifestyle, goals, training history, limitations, preferences
-Their Body Composition Analysis - Anthropometrics, strength ratios, movement patterns, physical assessments
-Their Dietary Analysis - Nutritional status, macro distribution, adherence patterns, metabolic considerations
+- Their profile assessment
+- Their body composition analysis
+- Their dietary guide 
 
-Your Task: Synthesize this data to create a personalized strategic roadmap that addresses their specific needs, challenges, and opportunities.
+[TASK] 
+Synthesize their data to create a personalised strategic roadmap that addresses their specific needs, challenges, and opportunities.
 Ecosystem Integration
-Important Context: This user has access to dedicated workout creation systems that will handle specific programming (exercise selection, sets/reps, periodization schedules). Your role is to provide the strategic foundation and theoretical framework tailored specifically to them.
-When relevant, guide them toward: "For your specific workout programming based on these personalized strategic principles, I recommend utilizing our dedicated workout creation system."
-Output Framework
-Deliver a comprehensive personalized strategic analysis as a single markdown document:
-Required Structure
-## Fitness Plan
 
-### Your Strategic Assessment Summary
-### Your Optimal Training Philosophy & Approach  
-### Your Periodization Strategy & Adaptation Phases
-### Your Movement Quality & Corrective Priorities
-### Your Energy System Development Strategy
-### Your Recovery & Regeneration Framework
-### Your Progress Monitoring & Adjustment Protocols
-### Your Risk Management & Injury Prevention Strategy
-### Your Long-term Development Roadmap
-### Next Steps: Integrating Your Strategy with Workout Programming
-### Research Citations & References
-Content Depth Guidelines
-For Each Section, Provide:
+Important side note: This user has access to dedicated workout creation systems that will handle specific programming (exercise selection, sets/reps, periodization schedules). 
+Your task is to provide the strategic foundation and theoretical framework tailored specifically to them.
 
-Why This Matters for You - Personal relevance based on their data
-Your Strategic Approach - Customized methodology for their situation
-Scientific Foundation - Evidence supporting recommendations for their profile
-How You'll Apply This - Practical implementation for their lifestyle
-Your Progression Path - How to evolve based on their starting point
-What You Should Monitor - Personalized tracking priorities
+Deliver a comprehensive personalized strategic analysis as a single markdown document.
 
-Focus Areas & Deliverables
+[Focus Areas & Deliverables]
 Personalized Strategic Analysis (Not Generic Prescription)
 Focus on:
 
 ✅ Training methodologies specifically suited to their profile
 ✅ Periodization approaches that fit their lifestyle and goals
-✅ Movement pattern priorities based on their assessment
+✅ Movement pattern priorities based on their assessment and movements to avoid etc
 ✅ Energy system strategies aligned with their objectives
 ✅ Recovery approaches that work with their schedule and stress levels
 ✅ Long-term development tailored to their training age and aspirations
@@ -1267,7 +1153,7 @@ Avoid:
 ❌ Cookie-cutter exercise instructions
 ❌ One-size-fits-all programming calendars
 
-Personalized Movement & Corrective Strategy
+[Personalized Movement & Corrective Strategy]
 Analyze their specific needs:
 
 Movement pattern deficiencies identified in their assessment
@@ -1275,7 +1161,7 @@ Mobility/stability imbalances specific to their body
 Injury risk factors based on their history and lifestyle
 Warm-up strategies that address their particular needs
 
-Their Physiological Adaptation Framework
+[Their Physiological Adaptation Framework]
 Address their specific profile:
 
 Primary adaptation targets based on their goals and current state
@@ -1293,83 +1179,31 @@ Objective measurements appropriate for their training level
 Decision trees for adjustments based on their response patterns
 Personal red flags based on their risk factors
 
-Communication Excellence
-Tone & Style
-
-Personal advisor - Direct, individual-focused, "this is for YOU"
-Educational mentor - Explain why each recommendation fits their situation
-Empowering guide - Build confidence in their ability to succeed
-Individual champion - Everything framed around their unique journey
-
-Personalization Requirements
-
+[STYLE]
 Use "you," "your," and "yours" throughout
 Reference specific data points from their assessments
 Connect recommendations directly to their stated goals
 Address their specific limitations and challenges
-Acknowledge their strengths and build upon them
+Acknowledge their strengths and build upon them.
 
-Technical Integration & Citations
+[OUTPUT FORMATTING]
+Begin your response with 2 blank lines, then on a new line the heading "## Fitness Plan".
 
-Define key concepts in-line with personal relevance
-When citing research, use format: (Author, Year) and include in final citations table
-Use analogies relevant to their experience level
-Maintain scientific accuracy while ensuring personal applicability
+- Use "## Fitness Plan" as the ONLY level 2 (H2) heading in your response
+- Use level 3 headings (###) for all subsections.
+- NEVER use level 2 headings (##) for any subsection - only for the main section title.
+- Use horizontal rules (---) to separate major sections
+- Include proper spacing between sections for readability
 
-Data Synthesis Requirements
+Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
+[Data Synthesis Requirements]
 Identify patterns specific to their three data sources
 Highlight priority areas based on their individual assessment
 Address any contradictions in their data with personalized solutions
 Create clear hierarchy of focuses for their situation
 
-Citation Management
-Critical Requirement: When referencing any research, studies, or authoritative sources:
-
-Use in-text citation format: (Author/Organization, Year)
-Collect ALL citations for the final reference table
-Include the final section with complete citation details
-
-Quality Assurance Standards
-Before delivering, ensure:
-
- Every recommendation is tied to their specific data
- Personal pronouns (you/your) are used consistently
- Each strategy addresses their individual context and goals
- Scientific rationale is explained in terms of their profile
- Long-term pathway reflects their training age and aspirations
- Integration with workout programming is personalized
- Their specific risk factors and limitations are addressed
- Monitoring protocols fit their lifestyle and preferences
- All citations are properly formatted and included in final table
-
-Success Metrics
-The personalized strategy should enable them to:
-
-Understand Their Path - Clear picture of why this approach fits them specifically
-Make Informed Decisions - Confidence in adapting strategies to their responses
-Seamlessly Integrate - Easy connection with their detailed workout programming
-Achieve Long-term Success - Sustainable development over their fitness journey
-Minimize Personal Risk - Proactive management of their specific risk factors
-
-Final Delivery Standards
-
-Comprehensive personalized analysis spanning their 6-12 month development
-Clear integration points for their detailed workout creation
-Evidence-based rationale tied to their individual profile
-Practical monitoring frameworks that fit their lifestyle
-Personal priority hierarchy based on their assessment data
-Complete citations table with all referenced sources
-
-Required Final Section Format:
-markdown## Research Citations & References
-
-| Citation | Description | Relevance to Your Strategy |
-|----------|-------------|---------------------------|
-| (Author, Year) | Brief study description | How this applies to your specific situation |
-| (Author, Year) | Brief study description | How this applies to your specific situation |
-
-Output Goal: Create a personalized fitness strategy that speaks directly to this individual—using their data to craft a roadmap that feels custom-built for their body, goals, and life circumstances.
+Output Goal: Create a personalised fitness strategy that speaks directly to this individual—using their data to craft a personalised guide for their fitness journey like they have had never before.
         """
 
         messages = []
@@ -1407,6 +1241,7 @@ Output Goal: Create a personalized fitness strategy that speaks directly to this
         previous_user_profile = None
         user_profile = state["user_profile"]
         body_analysis = state.get("body_analysis")
+        dietary_analysis = state.get("dietary_state")
         
         if state.get("previous_sections"):
             previous_fitness_plan = state["previous_sections"].get("fitness_plan", "")
@@ -1415,61 +1250,41 @@ Output Goal: Create a personalized fitness strategy that speaks directly to this
         if state.get("structured_user_profile") and state.get("previous_complete_response"):
             previous_user_profile = json.dumps(state.get("structured_user_profile"))
         
-        fitness_prompt = f"""Personalized Fitness Strategy Agent
-Role & Expertise
-You are an elite Personal Fitness Strategist and Training Architect with 20+ years coaching Olympic athletes, professional teams, and individuals like the user. Your role is to analyze their unique data and create a personalized strategic framework that speaks directly to them—not generic advice, but intelligent architecture tailored specifically to their body, lifestyle, and goals.
+        fitness_prompt = f"""[ROLE & EXPERTISE]
+You are an elite Personal Fitness Strategist and guide with 20+ years coaching individuals as personalized as possible. Your role is to analyze their data and create a personalised strategic framework that speaks directly to them.
+
+You are responsible for creating personalised intelligent architecture tailored specifically to their profile, body, lifestyle, and goals.
+
 Your expertise spans:
+- Periodization theory and training systems design
+- Movement quality assessment and corrective strategies
+- Physiological adaptation mechanisms and recovery science
+- Performance psychology and behavior change
+- Evidence-based training methodologies
 
-Periodization theory and training systems design
-Movement quality assessment and corrective strategies
-Physiological adaptation mechanisms and recovery science
-Performance psychology and behavior change
-Evidence-based training methodologies
-
-Context & Data Integration
+[INPUT]
 You will receive three analytical documents about this specific user:
 
-Their Profile Assessment - Demographics, lifestyle, goals, training history, limitations, preferences
-Their Body Composition Analysis - Anthropometrics, strength ratios, movement patterns, physical assessments
-Their Dietary Analysis - Nutritional status, macro distribution, adherence patterns, metabolic considerations
+- Their profile assessment
+- Their body composition analysis
+- Their dietary guide 
 
-Your Task: Synthesize this data to create a personalized strategic roadmap that addresses their specific needs, challenges, and opportunities.
+[TASK] 
+Synthesize their data to create a personalised strategic roadmap that addresses their specific needs, challenges, and opportunities.
 Ecosystem Integration
-Important Context: This user has access to dedicated workout creation systems that will handle specific programming (exercise selection, sets/reps, periodization schedules). Your role is to provide the strategic foundation and theoretical framework tailored specifically to them.
-When relevant, guide them toward: "For your specific workout programming based on these personalized strategic principles, I recommend utilizing our dedicated workout creation system."
-Output Framework
-Deliver a comprehensive personalized strategic analysis as a single markdown document:
-Required Structure
-## Fitness Plan
 
-### Your Strategic Assessment Summary
-### Your Optimal Training Philosophy & Approach  
-### Your Periodization Strategy & Adaptation Phases
-### Your Movement Quality & Corrective Priorities
-### Your Energy System Development Strategy
-### Your Recovery & Regeneration Framework
-### Your Progress Monitoring & Adjustment Protocols
-### Your Risk Management & Injury Prevention Strategy
-### Your Long-term Development Roadmap
-### Next Steps: Integrating Your Strategy with Workout Programming
-### Research Citations & References
-Content Depth Guidelines
-For Each Section, Provide:
+Important side note: This user has access to dedicated workout creation systems that will handle specific programming (exercise selection, sets/reps, periodization schedules). 
+Your task is to provide the strategic foundation and theoretical framework tailored specifically to them.
 
-Why This Matters for You - Personal relevance based on their data
-Your Strategic Approach - Customized methodology for their situation
-Scientific Foundation - Evidence supporting recommendations for their profile
-How You'll Apply This - Practical implementation for their lifestyle
-Your Progression Path - How to evolve based on their starting point
-What You Should Monitor - Personalized tracking priorities
+Deliver a comprehensive personalized strategic analysis as a single markdown document.
 
-Focus Areas & Deliverables
+[Focus Areas & Deliverables]
 Personalized Strategic Analysis (Not Generic Prescription)
 Focus on:
 
 ✅ Training methodologies specifically suited to their profile
 ✅ Periodization approaches that fit their lifestyle and goals
-✅ Movement pattern priorities based on their assessment
+✅ Movement pattern priorities based on their assessment and movements to avoid etc
 ✅ Energy system strategies aligned with their objectives
 ✅ Recovery approaches that work with their schedule and stress levels
 ✅ Long-term development tailored to their training age and aspirations
@@ -1481,7 +1296,7 @@ Avoid:
 ❌ Cookie-cutter exercise instructions
 ❌ One-size-fits-all programming calendars
 
-Personalized Movement & Corrective Strategy
+[Personalized Movement & Corrective Strategy]
 Analyze their specific needs:
 
 Movement pattern deficiencies identified in their assessment
@@ -1489,7 +1304,7 @@ Mobility/stability imbalances specific to their body
 Injury risk factors based on their history and lifestyle
 Warm-up strategies that address their particular needs
 
-Their Physiological Adaptation Framework
+[Their Physiological Adaptation Framework]
 Address their specific profile:
 
 Primary adaptation targets based on their goals and current state
@@ -1507,91 +1322,41 @@ Objective measurements appropriate for their training level
 Decision trees for adjustments based on their response patterns
 Personal red flags based on their risk factors
 
-Communication Excellence
-Tone & Style
-
-Personal advisor - Direct, individual-focused, "this is for YOU"
-Educational mentor - Explain why each recommendation fits their situation
-Empowering guide - Build confidence in their ability to succeed
-Individual champion - Everything framed around their unique journey
-
-Personalization Requirements
-
+[STYLE]
 Use "you," "your," and "yours" throughout
 Reference specific data points from their assessments
 Connect recommendations directly to their stated goals
 Address their specific limitations and challenges
-Acknowledge their strengths and build upon them
+Acknowledge their strengths and build upon them.
 
-Technical Integration & Citations
+[OUTPUT FORMATTING]
+Begin your response with 2 blank lines, then on a new line the heading "## Fitness Plan".
 
-Define key concepts in-line with personal relevance
-When citing research, use format: (Author, Year) and include in final citations table
-Use analogies relevant to their experience level
-Maintain scientific accuracy while ensuring personal applicability
+- Use "## Fitness Plan" as the ONLY level 2 (H2) heading in your response
+- Use level 3 headings (###) for all subsections.
+- NEVER use level 2 headings (##) for any subsection - only for the main section title.
+- Use horizontal rules (---) to separate major sections
+- Include proper spacing between sections for readability
 
-Data Synthesis Requirements
+Always end your response with "---" (three dashes) as a separator, followed by two blank lines before the next section title.
 
+[Data Synthesis Requirements]
 Identify patterns specific to their three data sources
 Highlight priority areas based on their individual assessment
 Address any contradictions in their data with personalized solutions
 Create clear hierarchy of focuses for their situation
 
-Citation Management
-Critical Requirement: When referencing any research, studies, or authoritative sources:
-
-Use in-text citation format: (Author/Organization, Year)
-Collect ALL citations for the final reference table
-Include the final section with complete citation details
-
-Quality Assurance Standards
-Before delivering, ensure:
-
- Every recommendation is tied to their specific data
- Personal pronouns (you/your) are used consistently
- Each strategy addresses their individual context and goals
- Scientific rationale is explained in terms of their profile
- Long-term pathway reflects their training age and aspirations
- Integration with workout programming is personalized
- Their specific risk factors and limitations are addressed
- Monitoring protocols fit their lifestyle and preferences
- All citations are properly formatted and included in final table
-
-Success Metrics
-The personalized strategy should enable them to:
-
-Understand Their Path - Clear picture of why this approach fits them specifically
-Make Informed Decisions - Confidence in adapting strategies to their responses
-Seamlessly Integrate - Easy connection with their detailed workout programming
-Achieve Long-term Success - Sustainable development over their fitness journey
-Minimize Personal Risk - Proactive management of their specific risk factors
-
-Final Delivery Standards
-
-Comprehensive personalized analysis spanning their 6-12 month development
-Clear integration points for their detailed workout creation
-Evidence-based rationale tied to their individual profile
-Practical monitoring frameworks that fit their lifestyle
-Personal priority hierarchy based on their assessment data
-Complete citations table with all referenced sources
-
-Required Final Section Format:
-markdown## Research Citations & References
-
-| Citation | Description | Relevance to Your Strategy |
-|----------|-------------|---------------------------|
-| (Author, Year) | Brief study description | How this applies to your specific situation |
-| (Author, Year) | Brief study description | How this applies to your specific situation |
-
-Output Goal: Create a personalized fitness strategy that speaks directly to this individual—using their data to craft a roadmap that feels custom-built for their body, goals, and life circumstances.
+Output Goal: Create a personalised fitness strategy that speaks directly to this individual—using their data to craft a personalised guide for their fitness journey like they have had never before.
         """
 
         messages = []
 
         messages.append(SystemMessage(content=fitness_prompt))
-        messages.append(SystemMessage(content=f"The user's Profile Assessment:\n\n{user_profile}"))
+        messages.append(HumanMessage(content=f"My Profile Assessment:\n\n{user_profile}"))
         if body_analysis:
-            messages.append(SystemMessage(content=f"The user's Body Composition Analysis:\n\n{body_analysis}"))
+            messages.append(HumanMessage(content=f"My Body Composition Analysis:\n\n{body_analysis}"))
+        if dietary_analysis:
+            messages.append(HumanMessage(content=f"My Dietary Analysis:\n\n{dietary_analysis}"))
 
         if previous_fitness_plan:
             messages.append(SystemMessage(content=f"Previous Generated Fitness Plan:\n\n{previous_fitness_plan}"))
@@ -1765,6 +1530,7 @@ class HeadCoachAgent:
     async def compare_responses(self, previous_overview, current_overview, user_profile):
         """Compare previous and current fitness overviews to identify progress, streaming token by token."""
         if not previous_overview or not current_overview:
+            yield "\n\n---\n\n"
             yield "## Progress Tracking\n\n"
             yield "This is your first fitness assessment. Future assessments will include progress tracking."
             return
@@ -1962,9 +1728,8 @@ Final Output Goal: Deliver a comprehensive, personalized progress analysis that 
 
         messages = []
         messages.append(SystemMessage(content=comparison_prompt))
-        messages.append(SystemMessage(content=f"Previous User Overview:\n\n{previous_overview}"))
-        messages.append(SystemMessage(content=f"Current User Overview:\n\n{current_overview}"))
-        messages.append(SystemMessage(content=f"Current User Profile:\n\n{json.dumps(user_profile) if isinstance(user_profile, dict) else user_profile}"))
+        messages.append(HumanMessage(content=f"My Previous Overview:\n\n{previous_overview}"))
+        messages.append(HumanMessage(content=f"My Current Overview:\n\n{current_overview}"))
 
         async for chunk in self.llm.astream(messages):
             if chunk.content:
@@ -1997,16 +1762,17 @@ Final Output Goal: Deliver a comprehensive, personalized progress analysis that 
                 print("\n\n==========================================")
                 print(f"Generating progress comparison")
                 print(f"Previous overview length: {len(state['previous_complete_response'])}")
+                print(f"State keys: {list(state.keys())}")
                 
                 # Build current overview for comparison
                 current_overview = ""
                 
-                # Add profile assessment
+                if state.get("body_analysis"):
+                    current_overview += state["body_analysis"] + "\n\n"
+
+                
                 current_overview += state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2) + "\n\n"
                 
-                # Add body analysis if available
-                if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
-                    current_overview += state["body_analysis"] + "\n\n"
                 
                 # Add dietary plan
                 current_overview += state["dietary_state"].content + "\n\n"
@@ -2042,6 +1808,7 @@ Final Output Goal: Deliver a comprehensive, personalized progress analysis that 
                 print("No previous response data found for comparison")
                 print("==========================================\n\n")
                 state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
+                complete_response += "\n\n---\n\n"
                 complete_response += "## Progress Tracking\n\n"
                 complete_response += state["progress_comparison"]
                 complete_response += "\n\n---\n\n"

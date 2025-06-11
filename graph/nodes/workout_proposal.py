@@ -13,7 +13,7 @@ async def propose_workout_plan(state: StateForWorkoutApp):
     writer({"type": "step", "content": "Proposing workout plan structure..."})
     
     # Simple status message
-    writer({"type": "progress", "content": "Starting workout plan proposal..."})
+    writer({"type": "progress", "content": "Working on the proposal..."})
 
     # Gather all relevant info from state
     user_profile = state.get("user_profile", {})
@@ -32,32 +32,34 @@ async def propose_workout_plan(state: StateForWorkoutApp):
     context_info = build_context_info(context, workout_prompt)
     overview = state.get("previous_complete_response", "")
 
-    messages: List[Any] = []
+    messages = []
 
     messages.append(SystemMessage(content="""ROLE
 You are a world-class strength-and-conditioning specialist, fluent in both performance science and everyday language. You have been summoned at the proposal/suggestion stage of an AI-assisted agent workflow.
-The outline of the programme has already been agreed and if any feedback from the user, then this is provided; your task is to turn that outline into a compelling, user-facing proposal that builds confidence, explanation and reasoning, showcases expertise, and sets the stage for automatic generation of the full prescription.
+The outline of the programme has already been agreed and any feedback from the user is received.
+Your task is to turn that outline into a compelling, user-facing proposal that:
 
-MANDATE
+- Builds confidence through clear explanation and reasoning  
+- Showcases expertise and personalisation  
+- Sets the stage for automated generation of the full prescription
+
+[MANDATE]
 
 Synthesise - Merge the agreed outline (workout_profile_analysis), the client's profile, conversation history, and any fresh feedback into one coherent concept.
 Personalise - Make every paragraph feel written for the client by referencing their goals, constraints, equipment, and assessment findings.
 Motivate - Use encouraging yet factual and brutally honest language to reinforce belief in the process.
-Comprehensive Coverage - Always include warmups, cooldowns, mobility work, and recovery protocols as integral parts of the programme.
+Comprehensive Coverage - Always include warmups, cooldowns, mobility work, and recovery protocols.
 
 
 INPUT SOURCES (IN ORDER OF AUTHORITY)
 
 workout_profile_analysis - the canonical outline you must expand.
 profile_assessment / body_analysis - posture, injury risks, strengths, weaknesses, lifestyle notes.
-feedback - any accept / tweak / reject directions since the outline was presented.
-context_info - snippets about exercises or past workouts that if any mentioned in the user's request.
 conversation_history - to maintain continuity and tone.
 
-Always defer to earlier-listed items if conflicts arise.
 
 OUTPUT GUIDELINES
-Core Structure
+[Core Structure]
 
 Session spotlights - give each session a headline and a one-sentence purpose (e.g., "Pull Power - reinforce horizontal strength and shoulder stability").
 Why it fits - thread brief, client-specific rationales throughout, tying choices to goals, equipment, schedule, recovery capacity or posture notes.
@@ -70,7 +72,13 @@ Cooldown strategies - recovery-focused activities to end each session
 Mobility & stretching - targeted flexibility work addressing client's needs
 Recovery enhancement - sleep, hydration, stress management relevant to their lifestyle
 Optional extras - additional work for when time/energy permits
-
+                                  
+[Prescription Ranges Guidance (mandatory)]  
+Near the end, in **plain conversational language**, spell out the recommended **set, rep, rest, and tempo ranges** you intend for each major exercise category or training goal (e.g. compound strength moves, hypertrophy accessories, energy-system finishers).  
+• Explain *why* those ranges suit the client’s objectives and profile.  
+• Highlight any **outliers or special cases** (e.g. higher reps on rear-delt raises for shoulder health).  
+• Do **not** list numbers for every single exercise—give rule-of-thumb ranges the downstream agent can apply.
+    
 Time-Flexible Approach
 
 Present a "core + optional" structure for each element
@@ -136,10 +144,10 @@ REMEMBER
 Your proposal bridges strategic outline and granular prescription. It must feel personalised, professional and honest—giving the client enough substance to stay engaged without diving into sets, reps or macros. Always present the complete picture (warmups, main work, cooldowns, recovery) while acknowledging time realities and offering flexible implementation options.
 """))
     
-    profile_summary = (
-        f"Summary of the user's Profile Assessment:\n\n{profile_assessment}\n"
-    )
-    messages.append(SystemMessage(profile_summary))
+    # profile_summary = (
+    #     f"Summary of the user's Profile Assessment:\n\n{profile_assessment}\n"
+    # )
+    messages.append(HumanMessage(f"My Profile Overview:\n\n{overview}"))
     
     messages.append(SystemMessage(content=f"CONVERSATION HISTORY START:"))
 
@@ -151,15 +159,13 @@ Your proposal bridges strategic outline and granular prescription. It must feel 
         elif msg.get("role") == "assistant":
             # Log the assistant messages as system messages to preserve context
             messages.append(SystemMessage(content=str(msg.get("content", ""))))
+    messages.append(HumanMessage(content=feedback))
+    #messages.append(SystemMessage(content=f"CONVERSATION HISTORY END"))
 
-    messages.append(SystemMessage(content=f"CONVERSATION HISTORY END"))
+    #messages.append(HumanMessage(content=f"My Original Request:\n{workout_prompt}"))
+    # if context_info:
+    #     messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
 
-    messages.append(HumanMessage(content=f"My Original Request:\n{workout_prompt}"))
-    if context_info:
-        messages.append(HumanMessage(content=f"Referenced Exercises / Workouts:\n{context_info}"))
-
-    messages.append(SystemMessage(content=f"Analysis Summary (yourprimary reference):\n{workout_profile_analysis}"))
-    messages.append(HumanMessage(content=f"My feedback:\n{feedback}"))
 
 
     try:
@@ -173,7 +179,6 @@ Your proposal bridges strategic outline and granular prescription. It must feel 
             "\n\n--------------------------------\n\n"
         )
         writer({"type": "token", "content": feedback_block})
-        response_text += feedback_block
         async for chunk in llm.astream(messages):
             token = getattr(chunk, "content", None)
             if token:
