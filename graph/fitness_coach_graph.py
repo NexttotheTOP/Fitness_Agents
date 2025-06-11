@@ -2,47 +2,40 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator, AsyncIterable
 from langgraph.graph import StateGraph, END
+from graph.workout_state import WorkoutState, AgentState, QueryType
+from graph.nodes.fitness_coach import ProfileAgent, DietaryAgent, FitnessAgent, QueryAgent, HeadCoachAgent
+from graph.memory_store import get_postgres_checkpointer, get_most_recent_profile_overview, get_structured_previous_overview
 import json
 import os
 import logging
 import traceback
 
-from graph.workout_state import WorkoutState, AgentState, QueryType
-from graph.nodes.fitness_coach import ProfileAgent, DietaryAgent, FitnessAgent, QueryAgent, HeadCoachAgent
-from graph.memory_store import get_postgres_checkpointer, store_profile_overview, get_most_recent_profile_overview, get_structured_previous_overview
-from graph.nodes.fitness_coach import HeadCoachAgent
 
-# Initialize the PostgreSQL connection pool and checkpointer
 try:
     postgres_checkpointer = get_postgres_checkpointer()
-    #setup_fitness_tables()  # Setup tables if they don't exist
     logging.info("PostgreSQL checkpointer and fitness tables initialized successfully")
 except Exception as e:
     logging.error(f"Error initializing PostgreSQL: {str(e)}")
-    # Fallback to memory checkpointer if PostgreSQL initialization fails
     from langgraph.checkpoint.memory import MemorySaver
     postgres_checkpointer = MemorySaver()
     logging.warning("Using in-memory checkpointer as fallback")
 
 def create_fitness_coach_workflow():
-    """Create a simplified fitness coach workflow with memory and thread management"""
     workflow = StateGraph(WorkoutState)
     
-    # Add nodes for each agent
     workflow.add_node("profile", ProfileAgent())
     workflow.add_node("dietary", DietaryAgent())
     workflow.add_node("fitness", FitnessAgent())
+    workflow.add_node("head_coach", HeadCoachAgent())
     #workflow.add_node("query", QueryAgent())
     
-    # Create simple linear flow for profile creation
     workflow.add_edge("profile", "dietary")
     workflow.add_edge("dietary", "fitness")
-    workflow.add_edge("fitness", END)
+    workflow.add_edge("fitness", "head_coach")
+    workflow.add_edge("head_coach", END)
     
-    # Set entry point to profile directly
     workflow.set_entry_point("profile")
     
-    # Create the compiler with PostgreSQL checkpointer for persistence
     return workflow.compile(checkpointer=postgres_checkpointer)
 
 # Create the app instance
@@ -221,14 +214,6 @@ async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterab
                     streamed_overview += token
                     yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
         # --- END NEW ---
-        # After all main content is streamed, stream the progress tracking section
-        store_profile_overview(state["user_id"], state["thread_id"], streamed_overview)   # metadata nog chekken !!! 
-        head_coach = HeadCoachAgent()
-        previous_overview = state.get("previous_complete_response", "")
-        yield f"data: {json.dumps({'type': 'content', 'content': ''})}\n\n"
-        async for token in head_coach.compare_responses(previous_overview, streamed_overview, state["user_profile"]):
-            if token:
-                yield f"data: {json.dumps({'type': 'progress', 'content': token})}\n\n"
     except Exception as e:
         logging.error(f"Error during streaming: {str(e)}")
         logging.error(traceback.format_exc())

@@ -609,13 +609,13 @@ If a detail is uncertain, label it **Indeterminate**—never guess.
 1–2 medium paragraphs covering body-comp metrics, vitals (if provided), and functional capacity. After each numeric value, add a parenthetical *confidence tag*—**High**, **Moderate**, or **Low**. Bold every number; mark missing ones **N/A**.
 
 ### Movement & Posture  
-Bullets summarising key observations: spinal alignment, limb symmetry, mobility restrictions. For each item, append “(Reason: …)” to show the visual or metric that triggered the call-out. Tag < 75 %-certain items as **Possible** or **Indeterminate**.
+Bullets summarising key observations: spinal alignment, limb symmetry, mobility restrictions. For each item, append "(Reason: …)" to show the visual or metric that triggered the call-out. Tag < 75 %-certain items as **Possible** or **Indeterminate**.
 
 ### Goal Alignment & Readiness  
 For every stated goal, create a two-column mini-table: **Supports Progress** | **Potential Roadblock**. Under each column give one factor, then add a one-line rationale.
 
 ### Realistic Timeframes  
-For each primary goal, give a **Best-Case ETA** and **Likely ETA**, plus the reasoning (e.g., “based on current weekly body-fat change of ~0.4 %”). If prediction is unsafe, write **Indeterminate**.
+For each primary goal, give a **Best-Case ETA** and **Likely ETA**, plus the reasoning (e.g., "based on current weekly body-fat change of ~0.4 %"). If prediction is unsafe, write **Indeterminate**.
 
 ### Key Focus Areas & Action Steps  
 List every relevant focus area—cover all that matter, no artificial limit. Start each bullet with a relevant icon (e.g., ✅ or ⚠️) 
@@ -729,13 +729,13 @@ If a detail is uncertain, label it **Indeterminate**—never guess.
 1–2 medium paragraphs covering body-comp metrics, vitals (if provided), and functional capacity. After each numeric value, add a parenthetical *confidence tag*—**High**, **Moderate**, or **Low**. Bold every number; mark missing ones **N/A**.
 
 ### Movement & Posture  
-Bullets summarising key observations: spinal alignment, limb symmetry, mobility restrictions. For each item, append “(Reason: …)” to show the visual or metric that triggered the call-out. Tag < 75 %-certain items as **Possible** or **Indeterminate**.
+Bullets summarising key observations: spinal alignment, limb symmetry, mobility restrictions. For each item, append "(Reason: …)" to show the visual or metric that triggered the call-out. Tag < 75 %-certain items as **Possible** or **Indeterminate**.
 
 ### Goal Alignment & Readiness  
 For every stated goal, create a two-column mini-table: **Supports Progress** | **Potential Roadblock**. Under each column give one factor, then add a one-line rationale.
 
 ### Realistic Timeframes  
-For each primary goal, give a **Best-Case ETA** and **Likely ETA**, plus the reasoning (e.g., “based on current weekly body-fat change of ~0.4 %”). If prediction is unsafe, write **Indeterminate**.
+For each primary goal, give a **Best-Case ETA** and **Likely ETA**, plus the reasoning (e.g., "based on current weekly body-fat change of ~0.4 %"). If prediction is unsafe, write **Indeterminate**.
 
 ### Key Focus Areas & Action Steps  
 List every relevant focus area—cover all that matter, no artificial limit. Start each bullet with a relevant icon (e.g., ✅ or ⚠️) 
@@ -837,7 +837,7 @@ Immediately after this instruction you will receive up to three system messages 
 ⸻
 
 MANDATE
-	1.	Diagnose – Extract calorie and macro needs from today’s body metrics, goals and activity level.
+	1.	Diagnose – Extract calorie and macro needs from today's body metrics, goals and activity level.
 	2.	Design – Provide a menu of balanced meal options that hit those targets and respect lifestyle constraints.
 	3.	Evolve – If a prior plan exists, highlight key adjustments that promote progression.
 	4.	Educate – Explain why each component matters for performance, recovery and adherence.
@@ -855,7 +855,7 @@ Produce a markdown document with one H2 and multiple H3 sections in the order be
 ### Daily Targets
 	•	Total Calories: XXXX kcal
 	•	Macros: Protein = XXX g, Carbs = XXX g, Fat = XXX g
-	•	Method: briefly state formula or evidence (e.g., “Mifflin-St Jeor with 10 % deficit for fat-loss phase”).
+	•	Method: briefly state formula or evidence (e.g., "Mifflin-St Jeor with 10 % deficit for fat-loss phase").
 
 ### Food Guidance (≈ 50-150 words)
 Write a concise narrative  that:  
@@ -885,7 +885,7 @@ Snacks – 5–7 options
 
 ### Hydration & Electrolytes
 
-Bullet key fluid and electrolyte goals (e.g., “3 L water daily; add 500 mg sodium on double-session days”).
+Bullet key fluid and electrolyte goals (e.g., "3 L water daily; add 500 mg sodium on double-session days").
 
 ### Nutritional Insights
 	•	Goal Support: how the plan aligns with hypertrophy / fat loss / endurance.
@@ -900,7 +900,7 @@ Table with two columns → | Previous Plan | Current Adjustment | — one row pe
 ⸻
 
 STYLE & FORMAT RULES
-	•	Only one H2 (“## Dietary Plan”); all others are H3 (“### …”) or lower.
+	•	Only one H2 ("## Dietary Plan"); all others are H3 ("### …") or lower.
 	•	Bold every food item; italicise macros in the exact pattern _Macros: 30 g P, 45 g C, 15 g F_.
 	•	Insert horizontal rules (---) between major sections.
 	•	Use up-to-date metric or imperial units consistent with profile (default to metric if unclear).
@@ -976,7 +976,7 @@ Immediately after this instruction you will receive up to three system messages 
 ⸻
 
 MANDATE
-	1.	Diagnose – Extract calorie and macro needs from today’s body metrics, goals and activity level.
+	1.	Diagnose – Extract calorie and macro needs from today's body metrics, goals and activity level.
 	2.	Design – Provide a menu of balanced meal options that hit those targets and respect lifestyle constraints.
 	3.	Evolve – If a prior plan exists, highlight key adjustments that promote progression.
 	4.	Educate – Explain why each component matters for performance, recovery and adherence.
@@ -994,7 +994,7 @@ Produce a markdown document with one H2 and multiple H3 sections in the order be
 ### Daily Targets
 	•	Total Calories: XXXX kcal
 	•	Macros: Protein = XXX g, Carbs = XXX g, Fat = XXX g
-	•	Method: briefly state formula or evidence (e.g., “Mifflin-St Jeor with 10 % deficit for fat-loss phase”).
+	•	Method: briefly state formula or evidence (e.g., "Mifflin-St Jeor with 10 % deficit for fat-loss phase").
 
 ### Food Guidance (≈ 50-150 words)
 Write a concise narrative  that:  
@@ -1024,7 +1024,7 @@ Snacks – 5–7 options
 
 ### Hydration & Electrolytes
 
-Bullet key fluid and electrolyte goals (e.g., “3 L water daily; add 500 mg sodium on double-session days”).
+Bullet key fluid and electrolyte goals (e.g., "3 L water daily; add 500 mg sodium on double-session days").
 
 ### Nutritional Insights
 	•	Goal Support: how the plan aligns with hypertrophy / fat loss / endurance.
@@ -1039,7 +1039,7 @@ Table with two columns → | Previous Plan | Current Adjustment | — one row pe
 ⸻
 
 STYLE & FORMAT RULES
-	•	Only one H2 (“## Dietary Plan”); all others are H3 (“### …”) or lower.
+	•	Only one H2 ("## Dietary Plan"); all others are H3 ("### …") or lower.
 	•	Bold every food item; italicise macros in the exact pattern _Macros: 30 g P, 45 g C, 15 g F_.
 	•	Insert horizontal rules (---) between major sections.
 	•	Use up-to-date metric or imperial units consistent with profile (default to metric if unclear).
@@ -1466,7 +1466,6 @@ class QueryAgent:
         return state
 
 class HeadCoachAgent:
-    """Coordinates the fitness coaching process and produces the final structured output."""
     
     def __init__(self):
         self.llm = ChatOpenAI(
@@ -1477,66 +1476,37 @@ class HeadCoachAgent:
         )
     
     async def stream(self, state: WorkoutState) -> AsyncGenerator[str, None]:
-        """Stream comprehensive coaching plan"""
-        # Get stream writer for emitting events
+        """Stream progress-tracking analysis token by token.
+
+        ‑ Emits custom events of type `progress` so the outer streaming loop can forward them.
+-        ‑ Relies on compare_responses() for the heavy lifting.
++        ‑ Uses the LLM directly with a progress-tracking prompt (see _progress_prompt).
+        """
         writer = get_stream_writer()
-        
-        # If complete_response is already generated, stream it directly
-        if state.get("complete_response"):
-            # Split by sections for more natural streaming
-            sections = state["complete_response"].split("\n\n")
-            for section in sections:
-                writer({"type": "response", "content": section + "\n\n"})
-                yield section + "\n\n"
+
+        writer({"type": "step", "content": "Generating progress tracking..."})
+
+        previous_overview = state.get("previous_complete_response", "")
+
+        # Build the current overview from parts that previous agents already stored in state
+        current_parts = []
+        if state.get("body_analysis"):
+            current_parts.append(state["body_analysis"])
+        user_profile = state["user_profile"]
+        current_parts.append(user_profile if isinstance(user_profile, str) else json.dumps(user_profile, indent=2))
+        current_parts.append(state["dietary_state"].content)
+        current_parts.append(state["fitness_state"].content)
+        current_overview = "\n\n".join(current_parts)
+
+        # First run? -> nothing to compare, emit placeholder once and finish
+        if not previous_overview:
+            first_msg = "\n\n---\n\n## Progress Tracking\n\nThis is your first fitness assessment. Future assessments will include progress tracking.\n\n---\n\n"
+            state["progress_comparison"] = first_msg
+            writer({"type": "progress", "content": first_msg})
+            yield first_msg
             return
-        
-        # If not already generated, create the structured output with all components
-        writer({"type": "response", "content": "# Your Personalized Fitness Plan\n\n"})
-        yield "# Your Personalized Fitness Plan\n\n"
-        
-        # Add profile assessment (no need to add header, it's in the content)
-        profile_content = state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
-        writer({"type": "profile", "content": profile_content})
-        yield profile_content
-        yield "\n\n"
-        
-        # Include body analysis if available (no need to add header, it's in the content)
-        if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
-            writer({"type": "profile", "content": state["body_analysis"]})
-            yield state["body_analysis"]
-            yield "\n\n"
-        
-        # Add dietary plan (no need to add the title since it's in the content)
-        writer({"type": "dietary", "content": state["dietary_state"].content})
-        yield state["dietary_state"].content
-        yield "\n\n"
-        
-        # Add fitness plan (no need to add the title since it's in the content)
-        writer({"type": "fitness", "content": state["fitness_state"].content})
-        yield state["fitness_state"].content
-        yield "\n\n"
 
-        # Add progress comparison if available
-        if state.get("progress_comparison"):
-            writer({"type": "progress", "content": state["progress_comparison"]})
-            yield state["progress_comparison"]
-            yield "\n\n"
-        
-        # Final message
-        final_message = "---\n\nYour personalized fitness and dietary plans have been created. You can now ask specific questions about your plans."
-        writer({"type": "response", "content": final_message})
-        yield final_message
-
-    async def compare_responses(self, previous_overview, current_overview, user_profile):
-        """Compare previous and current fitness overviews to identify progress, streaming token by token."""
-        if not previous_overview or not current_overview:
-            yield "\n\n---\n\n"
-            yield "## Progress Tracking\n\n"
-            yield "This is your first fitness assessment. Future assessments will include progress tracking."
-            return
-        
-
-        comparison_prompt = f"""Role & Expertise
+        comparison_prompt = """Role & Expertise
 You are a world-class Fitness Progress Analyst and Performance Coach with 15+ years specializing in longitudinal client assessment and transformation tracking. Your expertise encompasses:
 
 Quantitative Analysis: Biometric trends, performance metrics, and data-driven progress evaluation
@@ -1724,125 +1694,242 @@ Highlight metrics that warrant closer monitoring
 
 
 Final Output Goal: Deliver a comprehensive, personalized progress analysis that accurately quantifies achievements, contextualizes progress within realistic expectations, and provides strategic insights that fuel continued success and motivation.
-        """
+"""
+        messages = [
+            SystemMessage(content=comparison_prompt),
+            HumanMessage(content=f"My Previous Overview:\n\n{previous_overview}"),
+            HumanMessage(content=f"My Current Overview:\n\n{current_overview}")
+        ]
 
-        messages = []
-        messages.append(SystemMessage(content=comparison_prompt))
-        messages.append(HumanMessage(content=f"My Previous Overview:\n\n{previous_overview}"))
-        messages.append(HumanMessage(content=f"My Current Overview:\n\n{current_overview}"))
-
+        progress_text = ""
         async for chunk in self.llm.astream(messages):
-            if chunk.content:
-                yield chunk.content
+            token = chunk.content if hasattr(chunk, "content") else None
+            if token:
+                progress_text += token
+                writer({"type": "progress", "content": token})
+                yield token
+
+        # Persist full text on state for later reference
+        state["progress_comparison"] = progress_text
+
+    def __call__(self, state: WorkoutState) -> WorkoutState:
+        """Create progress-tracking text (non-stream invocation).
+        Stores the full comparison under state["progress_tracking"].
+        """
+        previous_overview = state.get("previous_complete_response", "")
+
+        # If no previous overview, store placeholder and exit
+        if not previous_overview:
+            state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
+            return state
+
+        # Build current overview (same logic as in stream)
+        current_parts = []
+        if state.get("body_analysis"):
+            current_parts.append(state["body_analysis"])
+        user_profile = state["user_profile"]
+        current_parts.append(user_profile if isinstance(user_profile, str) else json.dumps(user_profile, indent=2))
+        current_parts.append(state["dietary_state"].content)
+        current_parts.append(state["fitness_state"].content)
+        current_overview = "\n\n".join(current_parts)
+
+        comparison_prompt = """Role & Expertise
+You are a world-class Fitness Progress Analyst and Performance Coach with 15+ years specializing in longitudinal client assessment and transformation tracking. Your expertise encompasses:
+
+Quantitative Analysis: Biometric trends, performance metrics, and data-driven progress evaluation
+Qualitative Assessment: Lifestyle adaptation, behavioral change patterns, and adherence analysis
+Contextual Interpretation: Expected vs. actual progress rates, individual variation factors, and realistic timeline assessment
+Motivational Psychology: Progress framing, momentum building, and sustainable behavior reinforcement
+Strategic Adjustment: Identifying optimization opportunities and course correction needs
+
+Your role is to provide comprehensive, personalized progress analysis that both celebrates achievements and provides actionable insights for continued success.
+Task Objective
+Conduct a detailed comparative analysis between the client's previous and current assessments, delivering a personalized progress report that:
+
+Quantifies improvements across all measurable domains
+Contextualizes progress within realistic expectations
+Identifies strategic opportunities for optimization
+Maintains motivation while providing honest, actionable feedback
+Guides decision-making for future programming adjustments
+
+Context Integration Protocol
+You will receive three comprehensive data sets:
+Data Sources:
+
+PREVIOUS USER OVERVIEW → Complete historical snapshot: profile, body analysis, dietary plan, fitness strategy
+CURRENT USER OVERVIEW → Complete current snapshot: updated profile, body analysis, dietary plan, fitness strategy
+CURRENT USER PROFILE → JSON metadata: demographics, goals, activity level, lifestyle factors
+
+Analysis Framework:
+
+Temporal Comparison: Identify changes, trends, and progression patterns
+Contextual Assessment: Evaluate progress against individual baseline and realistic expectations
+Holistic Integration: Consider interactions between fitness, nutrition, lifestyle, and goal achievement
+Predictive Insight: Assess trajectory and recommend strategic adjustments
+
+Comprehensive Analysis Domains
+Required Comparison Categories:
+
+Anthropometric & Body Composition Changes
+
+Weight fluctuations and trend analysis
+Body fat percentage and muscle mass shifts
+Circumference measurements and visual progress
+Health markers and vital statistics
+
+
+Performance & Fitness Metrics
+
+Strength progression across movement patterns
+Cardiovascular endurance improvements
+Flexibility, mobility, and movement quality changes
+Workout consistency and training adherence
+
+
+Nutritional Progress & Dietary Adherence
+
+Macro and micronutrient compliance trends
+Eating pattern consistency and behavior changes
+Energy level and dietary satisfaction improvements
+Supplement adherence and effectiveness
+
+
+Lifestyle Integration & Behavioral Changes
+
+Sleep quality and recovery metrics
+Stress management and lifestyle balance
+Activity level outside structured exercise
+Habit formation and routine establishment
+
+
+Goal Achievement & Strategic Alignment
+
+Progress toward stated objectives
+Timeline adherence and expectation management
+Strategy effectiveness and optimization needs
+Motivation levels and psychological well-being
+
+
+
+Output Structure & Formatting
+Document Framework:
+[2 blank lines]
+## Progress Tracking
+
+### Executive Progress Summary
+### Body Composition & Physical Changes  
+### Performance & Training Progression
+### Nutritional Adherence & Dietary Evolution
+### Lifestyle Integration & Behavioral Wins
+### Strategic Insights & Forward Recommendations
+---
+Content Architecture Requirements:
+For Each Analysis Section:
+
+Quantified Improvements: Specific metrics with percentage/absolute changes
+Contextual Assessment: Whether progress aligns with expected timelines
+Individual Relevance: How changes relate to their specific goals and circumstances
+Strategic Implications: What this means for future programming decisions
+
+Formatting Standards:
+
+Bold ALL quantified improvements: Weight decreased by 2.3kg (5.1 lbs)
+Bold significant behavioral changes: Increased workout consistency from 2 to 5 days per week
+Use H3 (###) for ALL section headings - never use H2 (##) except for main title
+Use H4 (####) for subsections when additional hierarchy is needed
+End with separator: Three dashes (---) on final line
+
+Analysis Excellence Standards
+Quantification Requirements:
+
+Calculate percentage changes for all measurable metrics
+Provide absolute numbers alongside relative changes
+Include timeframe context (e.g., "over 8 weeks," "since last assessment")
+Compare against typical progress ranges when relevant
+
+Motivational Framework:
+
+Celebrate wins: Acknowledge ALL positive changes, however small
+Provide context: Explain why certain progress rates are realistic/impressive
+Address challenges constructively: Frame setbacks as learning opportunities
+Maintain momentum: End each section with forward-looking encouragement
+
+Scientific Rigor:
+
+Reference normal/expected progress ranges where applicable
+Explain physiological reasons behind certain changes or plateaus
+Distinguish between meaningful changes and normal fluctuation
+Provide evidence-based context for recommendations
+
+Communication Excellence
+Tone & Style:
+
+Professional yet personal: Expert analysis delivered with genuine care
+Encouraging but honest: Celebrate progress while acknowledging areas for improvement
+Action-oriented: Every insight should guide future decisions
+Individually focused: Everything framed around their specific journey
+
+Language Guidelines:
+
+Use "you" and "your" throughout for direct personal connection
+Avoid generic fitness language - make everything specific to their situation
+Explain technical terms when used, but keep language accessible
+Balance optimism with realistic assessment
+
+Data Presentation:
+
+Lead with improvements and positive changes
+Present challenges as opportunities for optimization
+Use specific numbers and percentages whenever possible
+Provide comparison context (e.g., "above average," "typical for your demographic")
+
+Quality Assurance Standards
+Pre-Delivery Checklist:
+
+ All quantifiable changes are calculated and presented clearly
+ Progress is contextualized against realistic expectations
+ Both improvements and challenges are addressed honestly
+ Recommendations are specific and actionable
+ Formatting follows exact specifications (H2 only for main title, H3 for sections)
+ Response begins with exactly 2 blank lines before "## Progress Tracking"
+ Document ends with "---" separator
+ Tone remains motivational while maintaining honesty
+
+Success Metrics:
+The analysis should enable the client to:
+
+Understand their progress clearly and objectively
+Feel motivated by recognizing their achievements
+Identify opportunities for continued improvement
+Make informed decisions about future strategies
+Maintain realistic expectations about their journey
+
+Strategic Integration Notes
+Connection to Ecosystem:
+
+Reference how progress impacts future strategic planning
+Suggest when updated assessments or strategy modifications may be beneficial
+Connect progress patterns to workout programming effectiveness
+Identify when specialist consultation might optimize results
+
+Predictive Elements:
+
+Assess trajectory toward long-term goals
+Identify potential obstacles or plateaus ahead
+Recommend strategic adjustments based on current progress patterns
+Highlight metrics that warrant closer monitoring
+
+
+Final Output Goal: Deliver a comprehensive, personalized progress analysis that accurately quantifies achievements, contextualizes progress within realistic expectations, and provides strategic insights that fuel continued success and motivation.
+"""
+        messages = [
+            SystemMessage(content=comparison_prompt),
+            HumanMessage(content=f"My Previous Overview:\n\n{previous_overview}"),
+            HumanMessage(content=f"My Current Overview:\n\n{current_overview}")
+        ]
+        response = self.llm.invoke(messages)
+        state["progress_comparison"] = response.content
+        return state
 
     
-    def __call__(self, state: WorkoutState) -> WorkoutState:
-        """Produce the final structured output with all components"""
-        # Ensure we preserve the original structured data
-        if "original_user_profile" in state:
-            user_profile_data = state["original_user_profile"]
-        elif "user_profile_data" in state:
-            user_profile_data = state["user_profile_data"]
-        else:
-            user_profile_data = {}
-            
-        if isinstance(user_profile_data, dict) and "image_timestamps" in user_profile_data:
-            image_timestamps = user_profile_data["image_timestamps"]
-        else:
-            image_timestamps = {}
-        
-        # Start building the complete response
-        complete_response = ""
-        
-        # First, generate progress comparison if we have previous data
-        progress_comparison = None
-        try:
-            # Use the complete previous response for comparison - this is more reliable than parsed sections
-            if "previous_complete_response" in state and state["previous_complete_response"]:
-                print("\n\n==========================================")
-                print(f"Generating progress comparison")
-                print(f"Previous overview length: {len(state['previous_complete_response'])}")
-                print(f"State keys: {list(state.keys())}")
-                
-                # Build current overview for comparison
-                current_overview = ""
-                
-                if state.get("body_analysis"):
-                    current_overview += state["body_analysis"] + "\n\n"
-
-                
-                current_overview += state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2) + "\n\n"
-                
-                
-                # Add dietary plan
-                current_overview += state["dietary_state"].content + "\n\n"
-                
-                # Add fitness plan
-                current_overview += state["fitness_state"].content + "\n\n"
-                
-                print(f"Current overview length: {len(current_overview)}")
-                print("==========================================\n\n")
-                
-                # Generate progress comparison using complete previous response
-                progress_comparison = self.compare_responses(
-                    state["previous_complete_response"],
-                    current_overview,
-                    user_profile_data
-                )
-                
-                print(f"\n\n==========================================")
-                print(f"Completed progress comparison. Result length: {len(progress_comparison)}")
-                print(f"==========================================\n\n")
-            
-            # Add progress comparison at the beginning if available
-            if progress_comparison:
-                print("\n\n==========================================")
-                print(f"Adding progress comparison to the beginning (length: {len(progress_comparison)})")
-                print("==========================================\n\n")
-                complete_response += progress_comparison
-                complete_response += "\n\n---\n\n"
-                state["progress_comparison"] = progress_comparison
-            else:
-                # No previous response available
-                print("\n\n==========================================")
-                print("No previous response data found for comparison")
-                print("==========================================\n\n")
-                state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
-                complete_response += "\n\n---\n\n"
-                complete_response += "## Progress Tracking\n\n"
-                complete_response += state["progress_comparison"]
-                complete_response += "\n\n---\n\n"
-        except Exception as e:
-            print("\n\n==========================================")
-            print(f"Error generating progress comparison: {str(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            print("==========================================\n\n")
-            # Continue without the comparison
-            complete_response += "# Your Personalized Fitness Plan\n\n"
-        
-        # Now add the rest of the sections (no need to add headers, they're in the content)
-        complete_response += state["user_profile"] if isinstance(state["user_profile"], str) else json.dumps(state["user_profile"], indent=2)
-        
-        # Include body analysis if available
-        if state.get("body_analysis") and len(state.get("body_analysis", "")) > 50:
-            complete_response += "\n\n"
-            complete_response += state["body_analysis"]
-        
-        # Add dietary plan (no need to add the title since it's in the content)
-        complete_response += "\n\n"
-        complete_response += state["dietary_state"].content
-        
-        # Add fitness plan (no need to add the title since it's in the content)
-        complete_response += "\n\n"
-        complete_response += state["fitness_state"].content
-        
-        # Final message
-        complete_response += "\n\n---\n\n"
-        complete_response += "Your personalized fitness and dietary plans have been created. You can now ask specific questions about your plans."
-        
-        # Store the complete response and original user profile data
-        state["complete_response"] = complete_response
-        state["user_profile_data"] = user_profile_data
-        
-        return state 
+    
