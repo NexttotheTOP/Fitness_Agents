@@ -23,3 +23,4 @@ class GraphState(TypedDict):
     thread_id: Optional[str]
     user_id: Optional[str]
     web_search_raw_results: Optional[List[Dict[str, Any]]] 
+    subqueries: Optional[List[str]]

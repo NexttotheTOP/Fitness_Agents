@@ -9,6 +9,7 @@ from graph.chains.router import question_router, RouteQuery
 from graph.consts import RETRIEVE, GRADE_DOCUMENTS, GENERATE, WEBSEARCH
 from graph.nodes import generate, grade_documents, retrieve, web_search
 from graph.state import GraphState
+from langchain_core.messages import HumanMessage, AIMessage
 
 load_dotenv()
 
@@ -51,13 +52,24 @@ def grade_generation_grounded_in_documents_and_question(state: GraphState) -> st
         return "not supported"
     
 
+def format_chat_history(conversation_history):
+    chat_history = []
+    for msg in conversation_history:
+        if msg["role"] == "user":
+            chat_history.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            chat_history.append(AIMessage(content=msg["content"]))
+    return chat_history
+
+
 def route_question(state: GraphState) -> str:
     print("---ROUTE QUESTION---")
     question = state["question"]
-    source: RouteQuery = question_router.invoke({"question": question})
-    if source.datasource == WEBSEARCH:
+    chat_history = format_chat_history(state["conversation_history"])
+    source: RouteQuery = question_router.invoke({"question": question, "chat_history": chat_history})
+    if source.datasource == GENERATE:
         print("---ROUTE QUESTION TO WEB SEARCH---")
-        return WEBSEARCH
+        return GENERATE
     elif source.datasource == "vectorstore":
         print("---ROUTE QUESTION TO RAG---")
         return RETRIEVE
@@ -76,7 +88,7 @@ workflow.add_node(WEBSEARCH, web_search)
 workflow.set_conditional_entry_point(
     route_question,
     path_map= {
-        WEBSEARCH: WEBSEARCH,
+        GENERATE: GENERATE,
         RETRIEVE: RETRIEVE,
     },
 )

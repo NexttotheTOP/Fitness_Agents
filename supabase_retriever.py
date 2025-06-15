@@ -11,9 +11,17 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_openai import OpenAIEmbeddings
 from graph.memory_store import get_supabase_client
 import logging
+from langchain_openai import ChatOpenAI
 from pydantic import Field
+import os
 
 logger = logging.getLogger("supabase_retriever")
+
+SUPABASE_AVAILABLE = True
+USE_SUPABASE = os.getenv("USE_SUPABASE_VECTOR", "true").lower() == "true"
+
+
+
 
 class SupabaseVectorRetriever(BaseRetriever):
     """
@@ -24,8 +32,9 @@ class SupabaseVectorRetriever(BaseRetriever):
     # Define fields with proper Pydantic field definitions
     embedding_function: OpenAIEmbeddings = Field(default_factory=OpenAIEmbeddings)
     search_type: str = Field(default="similarity_score_threshold")
-    search_kwargs: Dict[str, Any] = Field(default_factory=lambda: {"score_threshold": 0.5, "k": 15})
+    search_kwargs: Dict[str, Any] = Field(default_factory=lambda: {"score_threshold": 0.8, "k": 15})
     supabase_client: Any = Field(default=None, exclude=True)  # Exclude from serialization
+    last_subqueries: List[str] = Field(default_factory=list, exclude=True)
     
     def __init__(
         self, 
@@ -46,7 +55,7 @@ class SupabaseVectorRetriever(BaseRetriever):
         if embedding_function is None:
             embedding_function = OpenAIEmbeddings()
         if search_kwargs is None:
-            search_kwargs = {"score_threshold": 0.5, "k": 15}
+            search_kwargs = {"score_threshold": 0.8, "k": 15}
             
         # Initialize with proper field values
         super().__init__(
@@ -55,13 +64,16 @@ class SupabaseVectorRetriever(BaseRetriever):
             search_kwargs=search_kwargs,
             **kwargs
         )
-        
+        self.last_subqueries = []
         # Set up Supabase client (not a Pydantic field)
         object.__setattr__(self, 'supabase_client', get_supabase_client())
         
         logger.info(f"SupabaseVectorRetriever initialized with search_type='{search_type}', kwargs={search_kwargs}")
     
-    def _get_relevant_documents(self, query: str) -> List[Document]:
+    def invoke(self, question, conversation_history=None, **kwargs):
+        return self._get_relevant_documents(question, conversation_history=conversation_history, **kwargs)
+
+    def _get_relevant_documents(self, query: str, conversation_history: List = None) -> List[Document]:
         """
         Get relevant documents from Supabase using vector similarity search.
         This replaces ChromaDB's similarity search.
@@ -72,24 +84,71 @@ class SupabaseVectorRetriever(BaseRetriever):
         Returns:
             List of Document objects with similarity scores
         """
+        if conversation_history is None:
+            conversation_history = []
+        queries = self._generate_subqueries(query, conversation_history)
+        self.last_subqueries = queries
+        logger.info(f"🔄 Generated sub-queries: {queries}")
+
+        # Keep the original `k` so we can restore it later
+        orig_k = self.search_kwargs.get("k", 15)
+        # We only want 5 docs per sub-query
+        self.search_kwargs["k"] = 5
+
         try:
-            # Step 1: Embed the query (same as ChromaDB process)
-            logger.info(f"🔍 Embedding query: '{query[:50]}...'")
-            query_embedding = self.embedding_function.embed_query(query)
-            
-            # Convert to list if needed (ensure compatibility)
-            if hasattr(query_embedding, 'tolist'):
-                query_embedding = query_embedding.tolist()
-            elif isinstance(query_embedding, np.ndarray):
-                query_embedding = query_embedding.tolist()
-            
-            # Step 2: Call Supabase vector search
-            return self._search_supabase_vectors(query_embedding, query)
-            
+            all_docs: List[Document] = []
+            seen_keys: set = set()
+
+            for sub_q in queries:
+                try:
+                    # Embed each sub-query independently
+                    sub_emb = self.embedding_function.embed_query(sub_q)
+                    if hasattr(sub_emb, "tolist"):
+                        sub_emb = sub_emb.tolist()
+                    elif isinstance(sub_emb, np.ndarray):
+                        sub_emb = sub_emb.tolist()
+
+                    docs = self._search_supabase_vectors(sub_emb, sub_q)
+
+                    # Deduplicate on (source, chunk_index) pair – adjust if needed
+                    for d in docs:
+                        key = (d.metadata.get("source"), d.metadata.get("chunk_index"))
+                        if key not in seen_keys:
+                            all_docs.append(d)
+                            seen_keys.add(key)
+                except Exception as sub_err:
+                    logger.error(f"⚠️ Retrieval failed for sub-query '{sub_q}': {sub_err}")
+                    continue
+
+            # Restore original `k` for any future calls
+            self.search_kwargs["k"] = orig_k
+
+            # Sort by similarity score when available, otherwise keep insertion order
+            all_docs.sort(key=lambda d: -d.metadata.get("similarity_score", 0.0))
+            return all_docs[:orig_k]
+
         except Exception as e:
-            logger.error(f"❌ Error in vector retrieval: {e}")
-            # Return empty list instead of failing completely
+            # Make sure we always restore `k`
+            self.search_kwargs["k"] = orig_k
+            logger.error(f"❌ Error in multi-query retrieval: {e}")
             return []
+        
+    def _generate_subqueries(self, question: str, conversation_history: List[dict], n: int = 3) -> List[str]:
+        def format_history(history):
+            return "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
+        history_str = format_history(conversation_history)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.15)          
+        prompt = ("""You are an expert at searching a fitness and nutrition vector knowledge base. 
+                Given a user question, and the conversation history as context, generate **three** distinct, concise search queries 
+                that, together, capture different angles, synonyms, or sub-topics for retrieving the most relevant information from a vector database. 
+                Return them as a plain list with no extra text.
+                Conversation history: {chat_history}
+                Question: {question}
+                Number of queries: {n}
+                """)
+        
+        resp = llm.invoke(prompt.format(chat_history=history_str, question=question, n=n))
+        return [q.strip() for q in resp.content.split("\n") if q.strip()][:n]
     
     def _search_supabase_vectors(self, query_embedding: List[float], original_query: str) -> List[Document]:
         """
@@ -104,7 +163,7 @@ class SupabaseVectorRetriever(BaseRetriever):
         """
         try:
             # Extract search parameters
-            score_threshold = self.search_kwargs.get("score_threshold", 0.5)
+            score_threshold = self.search_kwargs.get("score_threshold", 0.8)
             match_count = self.search_kwargs.get("k", 15)
             
             logger.info(f"🔍 Searching Supabase vectors with threshold={score_threshold}, count={match_count}")
@@ -200,7 +259,7 @@ class SupabaseVectorRetriever(BaseRetriever):
                     similarity = np.dot(query_vector, doc_vector) / (np.linalg.norm(query_vector) * np.linalg.norm(doc_vector))
                     
                     # Apply threshold
-                    if similarity >= self.search_kwargs.get("score_threshold", 0.5):
+                    if similarity >= self.search_kwargs.get("score_threshold", 0.8):
                         doc = Document(
                             page_content=item.get('content', ''),
                             metadata={
@@ -246,7 +305,7 @@ def get_supabase_retriever(
         SupabaseVectorRetriever instance
     """
     if search_kwargs is None:
-        search_kwargs = {"score_threshold": 0.5, "k": 15}
+        search_kwargs = {"score_threshold": 0.8, "k": 15}
     
     return SupabaseVectorRetriever(
         embedding_function=OpenAIEmbeddings(),
@@ -279,3 +338,31 @@ def check_supabase_vectorstore() -> tuple[bool, Optional[SupabaseVectorRetriever
     except Exception as e:
         logger.error(f"❌ Error checking Supabase vectorstore: {e}")
         return False, None 
+    
+def get_retriever():
+        """
+        Get a retriever from the available vectorstore.
+        Only Supabase is supported.
+        """
+        logger.info("🔍 Creating retriever from Supabase vectorstore...")
+        if USE_SUPABASE and SUPABASE_AVAILABLE:
+            logger.info("🚀 Attempting to use Supabase vector retriever...")
+            try:
+                exists, supabase_retriever = check_supabase_vectorstore()
+                if exists and supabase_retriever is not None:
+                    logger.info("✅ Supabase retriever created successfully")
+                    print("Supabase Retriever created ================================")
+                    return supabase_retriever
+                else:
+                    logger.warning("⚠️ Supabase vectorstore empty or unavailable – falling back to basic retriever instance")
+                    # Always attempt to return a retriever so the rest of the pipeline can proceed
+                    try:
+                        return get_supabase_retriever()
+                    except Exception as fallback_err:
+                        logger.error(f"❌ Fallback retriever creation failed: {fallback_err}")
+            except Exception as e:
+                logger.error(f"❌ Supabase retriever failed: {e}")
+        logger.error("❌ Failed to create any retriever - no Supabase vectorstore available")
+        return None
+
+retriever = get_retriever()

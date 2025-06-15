@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 
 from graph.state import GraphState
-from ingestion import retriever, get_retriever
+from supabase_retriever import retriever
 
 
 def retrieve(state: GraphState) -> Dict[str, Any]:
@@ -10,7 +10,9 @@ def retrieve(state: GraphState) -> Dict[str, Any]:
     
     # Create a copy of the full state
     new_state = state.copy()
-    
+    conversation_history = state.get("conversation_history", [])
+    new_state = state.copy()
+
     # Check if retriever is available
     if retriever is None:
         print("WARNING: Vector database not initialized or empty")
@@ -18,8 +20,12 @@ def retrieve(state: GraphState) -> Dict[str, Any]:
         new_state["web_search"] = True
         return new_state
 
-    documents = retriever.invoke(question)
+    documents = retriever.invoke(question, conversation_history)
     print(f"DEBUG: Retrieved {len(documents)} documents")
     print(f"DEBUG: Documents: {documents}")
     new_state["documents"] = documents
+
+    if hasattr(retriever, "last_subqueries"):
+        new_state["subqueries"] = retriever.last_subqueries
+
     return new_state

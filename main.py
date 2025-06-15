@@ -620,17 +620,25 @@ async def ask_question(question: Question):
                 sources = []
                 if route == RETRIEVE:
                     # Retrieve documents
-                    yield f"data: {json.dumps({'type': 'step', 'content': 'Retrieving documents from vector database...'})}\n\n"
                     state = retrieve(state)
                     
                     # Debug logging for documents
                     doc_count = len(state.get("documents", []))
                     logging.info(f"Retrieved {doc_count} documents from vector database")
                     
-                    # Grade documents
-                    yield f"data: {json.dumps({'type': 'step', 'content': 'Grading retrieved documents for relevance...'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Retrieving documents from vector database...'})}\n\n"
+
+                    subqueries = state.get("subqueries", [])
+                    if subqueries:
+                        if len(subqueries) == 1:
+                            subq_msg = f"Used this query to search our knowledge base: \"{subqueries[0]}\""
+                        else:
+                            subq_msg = f"Used these {len(subqueries)} queries to search our knowledge base: " + ", ".join(f"\"{q}\"" for q in subqueries)
+                        yield f"data: {json.dumps({'type': 'step', 'content': subq_msg})}\n\n"
+
                     pre_grade_docs = len(state.get("documents", []))
                     state = grade_documents(state)
+                    yield f"data: {json.dumps({'type': 'step', 'content': 'Grading retrieved documents for relevance...'})}\n\n"
                     post_grade_docs = len(state.get("documents", []))
                     logging.info(f"Document grading: {pre_grade_docs} before, {post_grade_docs} after")
                     

@@ -14,20 +14,6 @@ import json
 import logging
 import shutil
 
-# Add Supabase vector support
-try:
-    from supabase_retriever import (
-        get_supabase_retriever, 
-        check_supabase_vectorstore,
-        SupabaseVectorRetriever
-    )
-    SUPABASE_AVAILABLE = True
-    logger = logging.getLogger("ingestion")
-    logger.info("✅ Supabase vector retriever available")
-except ImportError as e:
-    SUPABASE_AVAILABLE = False
-    logger = logging.getLogger("ingestion")
-    logger.warning(f"⚠️ Supabase vector retriever not available: {e}")
 
 # Configure logging
 logging.basicConfig(
@@ -44,9 +30,6 @@ for noisy_logger in ["httpx", "httpcore", "hpack", "httpcore.http2"]:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 load_dotenv()
-
-# Environment variable to control which vector store to use
-USE_SUPABASE = os.getenv("USE_SUPABASE_VECTOR", "true").lower() == "true"
 
 # Function to extract video ID from YouTube URL
 def extract_video_id(url):
@@ -153,26 +136,6 @@ def collect_and_prepare_documents():
     
     return doc_splits
 
-def get_retriever():
-    """
-    Get a retriever from the available vectorstore.
-    Only Supabase is supported.
-    """
-    logger.info("🔍 Creating retriever from Supabase vectorstore...")
-    if USE_SUPABASE and SUPABASE_AVAILABLE:
-        logger.info("🚀 Attempting to use Supabase vector retriever...")
-        try:
-            exists, supabase_retriever = check_supabase_vectorstore()
-            if exists and supabase_retriever is not None:
-                logger.info("✅ Supabase retriever created successfully")
-                print("Supabase Retriever created ================================")
-                return supabase_retriever
-            else:
-                logger.error("❌ Supabase vectorstore not available.")
-        except Exception as e:
-            logger.error(f"❌ Supabase retriever failed: {e}")
-    logger.error("❌ Failed to create any retriever - no Supabase vectorstore available")
-    return None
 
 def check_vectorstore_availability():
     """
@@ -211,8 +174,6 @@ def get_retriever_info():
         info["current_retriever"] = "none"
     return info
 
-# Export the retriever for use in the application
-retriever = get_retriever()
 
 def load_fitness_youtubers_data():
     """
@@ -424,7 +385,7 @@ def create_fitness_vector_database(batch_size=250):
         global retriever
         retriever = vectorstore.as_retriever(
             search_type="similarity_score_threshold", 
-            search_kwargs={"score_threshold": 0.5, "k": 15}
+            search_kwargs={"score_threshold": 0.8, "k": 15}
         )
         # logger.info("Global retriever updated with new vector database")
     except Exception as e:
@@ -434,25 +395,6 @@ def create_fitness_vector_database(batch_size=250):
     return vectorstore
 
 
-# This code only runs when directly executing this script
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Fitness Vector Database Management")
-    parser.add_argument("--create", action="store_true", help="Create or recreate the vector database")
-    parser.add_argument("--check", action="store_true", help="Check vector database status")
-    
-    args = parser.parse_args()
-    
-    if args.create:
-        # logger.info("Creating fitness vector database")
-        create_fitness_vector_database()
-    elif args.check:
-        # logger.info("Checking vector database status")
-        check_vectorstore()
-    else:
-        # logger.info("Running with default action: create fitness vector database")
-        create_fitness_vector_database() 
 
 
 

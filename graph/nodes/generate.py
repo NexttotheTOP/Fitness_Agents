@@ -1,6 +1,6 @@
 from typing import Any, Dict, AsyncGenerator, AsyncIterable
 from langchain_core.messages import HumanMessage, AIMessage
-
+from graph.memory_store import get_most_recent_profile_overview
 from graph.chains.generation import generation_chain, streaming_generation_chain, streaming_conversation_chain, conversation_chain
 from graph.state import GraphState
 import asyncio
@@ -11,8 +11,11 @@ def generate(state: GraphState) -> Dict[str, Any]:
     print("---GENERATE---")
     question = state["question"]
     documents = state["documents"]
+    user_id = state["user_id"]
     conversation_history = state.get("conversation_history", [])
-    
+    profile_overview_data = get_most_recent_profile_overview(user_id)
+    profile_overview = profile_overview_data["content"] if profile_overview_data and "content" in profile_overview_data else ""
+    print(f"============================================================================    Profile overview: {profile_overview}")
     # Convert conversation history to LangChain message format
     chat_history = []
     if conversation_history:
@@ -26,7 +29,8 @@ def generate(state: GraphState) -> Dict[str, Any]:
     generation = conversation_chain.invoke({
         "context": format_docs(documents), 
         "question": question,
-        "chat_history": chat_history  # Always include this parameter
+        "chat_history": chat_history,
+        "user_profile": profile_overview
     })
     return {"documents": documents, "question": question, "generation": generation}
 
@@ -53,6 +57,9 @@ async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
     question = state["question"]
     documents = state["documents"]
     conversation_history = state.get("conversation_history", [])
+    user_id = state["user_id"]
+    profile_overview_data = get_most_recent_profile_overview(user_id)
+    profile_overview = profile_overview_data["content"] if profile_overview_data and "content" in profile_overview_data else ""
     
     # Better logging for debugging
     print(f"Conversation history has {len(conversation_history)} messages")
@@ -78,7 +85,8 @@ async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
             async for chunk in streaming_conversation_chain.astream({
                 "context": format_docs(documents), 
                 "question": question,
-                "chat_history": chat_history
+                "chat_history": chat_history,
+                "user_profile": profile_overview
             }):
                 if hasattr(chunk, 'content') and chunk.content:
                     yield chunk.content
@@ -91,7 +99,8 @@ async def generate_streaming(state: GraphState) -> AsyncIterable[str]:
     async for chunk in streaming_conversation_chain.astream({
         "context": format_docs(documents), 
         "question": question,
-        "chat_history": []  # Empty chat history
+        "chat_history": [],
+        "user_profile": profile_overview
     }):
         if hasattr(chunk, 'content') and chunk.content:
             yield chunk.content

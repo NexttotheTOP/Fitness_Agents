@@ -4,40 +4,30 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_openai import ChatOpenAI
 import os
+from langchain_core.prompts import MessagesPlaceholder
 
 class RouteQuery(BaseModel):
     """Route a user query to the most relevant datasource."""
 
-    datasource: Literal["vectorstore", "websearch"] = Field(
+    datasource: Literal["vectorstore", "generate"] = Field(
         ...,
-        description="Given a user question choose to route it to web search or a vectorstore.",
+        description="Given a user question choose to route it to our vectorstore or directly to generate.",
     )
 
 
-llm = ChatOpenAI(temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"))
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"))
 structured_llm_router = llm.with_structured_output(RouteQuery)
 
-system = """You are an expert at routing a user question to a vectorstore or web search.
+system = """You are a very good router/decider. You excel at routing a user question either to our vector database with all our fitness data/knowledge or to generate.
 
-The vectorstore contains documents related to fitness, workout routines, nutrition, and exercise techniques from popular fitness YouTubers including:
-- Jeff Nippard
-- AthleanX (Jeff Cavaliere)
-- Renaissance Periodization (Dr. Mike Israetel)
+The vectorstore contains a LOT of data related to fitness (25 000+ docs), its science behind, nutrition, really really broad in all these fields.
 
-Use the vectorstore for ANY questions related to:
-- Workout routines and programming
-- Exercise techniques and form
-- Muscle growth and strength training
-- Fitness nutrition and diet advice
-- Weight loss and body composition
-- General fitness concepts and principles
-- Any other questions related to fitness, workout routines, nutrition, and exercise techniques
-
-Only use web-search if the question is completely unrelated to fitness or requires very recent/current information that wouldn't be in the vectorstore."""
+You should ALWAYS output vectorstore unless the user is just greeting without actual question, or the user specifically requests for the most up to date info which won't happen a lot."""
 route_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", system),
-        ("human", "{question}"),
+        ("system", "Start of the conversation history"),
+        MessagesPlaceholder(variable_name="chat_history"),
     ]
 )
 
