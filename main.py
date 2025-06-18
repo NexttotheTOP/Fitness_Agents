@@ -125,7 +125,82 @@ async def root():
         }
     }
 
-# Note: We're no longer defining thread_to_sid here - it's now in shared_state.py
+# ---------------------------------------------------------------------------
+# Enterprise-grade Health Check Endpoint
+# ---------------------------------------------------------------------------
+# Provides a single source of truth for platform-level readiness / liveness.
+# Returns HTTP 200 when *all* critical services are operational, otherwise 503.
+# Railway (or any load-balancer) will treat non-200 as deployment failure.
+
+SERVICE_VERSION = os.getenv("SERVICE_VERSION", "1.0.0")
+SERVICE_START_TIME = datetime.utcnow()
+
+
+@api.get("/health", summary="Liveness / readiness probe", tags=["infra"])
+async def health_check():
+    """Lightweight health-check used by Railway & monitoring.
+
+    Success criteria (all must pass):
+    1. Env vars present (OpenAI & Supabase keys).
+    2. Supabase reachable with a *trivial* query (SELECT 1 LIMIT 1).
+    3. Vector-store retriever available (will not embed, only instantiate).
+    4. Socket.IO layer initialised (sio object exists).
+    """
+
+    # ------------------------ 1. Environment vars -------------------------
+    required_env = [
+        "OPENAI_API_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_KEY",
+    ]
+    missing_env = [var for var in required_env if not os.getenv(var)]
+
+    # ------------------------ 2. Supabase connectivity --------------------
+    supabase_status = "unknown"
+    try:
+        from graph.memory_store import get_supabase_client
+
+        supabase = get_supabase_client()
+        # Perform ultra-light query (metadata only, no rows fetched)
+        supabase.table("fitness_profile_generations").select("id").limit(1).execute()
+        supabase_status = "connected"
+    except Exception as exc:
+        supabase_status = f"error: {exc.__class__.__name__}"
+
+    # ------------------------ 3. Vector store availability ---------------
+    vector_store_status = "unknown"
+    try:
+        from supabase_retriever import check_supabase_vectorstore
+
+        exists, _ = check_supabase_vectorstore()
+        vector_store_status = "available" if exists else "unavailable"
+    except Exception as exc:
+        vector_store_status = f"error: {exc.__class__.__name__}"
+
+    # ------------------------ 4. Socket.IO layer -------------------------
+    socketio_status = "running" if sio else "uninitialised"
+
+    # ------------------------ Aggregate result ---------------------------
+    is_healthy = not missing_env and supabase_status == "connected" and vector_store_status == "available"
+
+    payload = {
+        "status": "healthy" if is_healthy else "unhealthy",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "uptime_seconds": (datetime.utcnow() - SERVICE_START_TIME).total_seconds(),
+        "version": SERVICE_VERSION,
+        "services": {
+            "env_vars": "ok" if not missing_env else {"missing": missing_env},
+            "supabase": supabase_status,
+            "vector_store": vector_store_status,
+            "socketio": socketio_status,
+        },
+    }
+
+    if is_healthy:
+        return payload  # HTTP 200
+    # Mark deployment as failed / remove from LB rotation
+    raise HTTPException(status_code=503, detail=payload)
+
 
 # Helper function to extract final state from LangGraph results
 def _extract_final_state(state_result, thread_id, user_id, messages):
