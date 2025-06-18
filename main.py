@@ -58,10 +58,9 @@ from langgraph.types import Command, Interrupt
 # Create FastAPI app
 api = FastAPI(title="Fitness Coach API")
 
-# Add CORS middleware
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Add your Netlify domain and localhost for testing
+    allow_origins=["https://fitness-friend.netlify.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

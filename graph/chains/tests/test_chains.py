@@ -6,7 +6,7 @@ load_dotenv()
 
 from graph.chains.retrieval_grader import GradeDocuments, retrieval_grader
 from graph.chains.generation import generation_chain
-from ingestion import retriever
+from supabase_retriever import retriever
 
 
 def test_retrival_grader_answer_yes() -> None:
