@@ -15,6 +15,7 @@ from graph.model_state import ModelState
 from graph.tools import (
     MODEL_CONTROL_TOOL_FUNCTIONS,
     select_muscles_tool,
+    toggle_muscle_tool,
     set_animation_frame_tool,
     toggle_animation_tool,
     set_camera_position_tool,
@@ -224,10 +225,14 @@ Naming Rules:
 # """
 
 # Response generation prompt - used after tools are executed
-RESPONSE_PROMPT = """
+RESPONSE_PROMPT = """[PERSONA]
 You are a high-skilled, experienced and helpful fitness coach working with your client (who is your friend).
 You casually answer all of the questions during the ongoing conversation you guys have.
 Your responses should be based on both the provided context and the conversation history.
+
+[CONTEXT]
+- The full ongoing conversation history 
+- THE current 3D model state and the changes that have been applied.
 
 Remember that you're using a 3D fitness/anatomy model to help explain concepts - other agents (your collegeaus) have already handled the technical aspects of controlling the model. 
 The muscles and camera positioning you wanted to show are already displayed.
@@ -243,13 +248,10 @@ Guidelines:
 - If something is unclear, ask for clarification
 - Keep explanations helpful but concise - avoid unnecessary repetition
 
-Context:
-- User's question: {user_question}
-- Your initial thoughts: {initial_assessment}
-- Changes made to the 3D model: {model_changes}
-- Previous conversation history.
+[OUTPUT]
+Output in nicely styled markdown format.
 
-Respond naturally as part of an ongoing conversation.
+Respond in crystal-clear language as part of an ongoing conversation.
 """
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, streaming=True)
@@ -257,6 +259,7 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, streaming=True)
 # Map of tool names to their actual function implementations
 TOOL_MAP = {
     "select_muscles": select_muscles_tool,
+    "toggle_muscle": toggle_muscle_tool,
     "set_animation_frame": set_animation_frame_tool,
     "toggle_animation": toggle_animation_tool,
     "set_camera_position": set_camera_position_tool,
@@ -268,6 +271,7 @@ TOOL_MAP = {
 # Remove animation tools from tool selection
 MODEL_CONTROL_TOOL_FUNCTIONS_NO_ANIMATION = [
     select_muscles_tool,
+    toggle_muscle_tool,
     set_camera_view_tool,
     reset_camera_tool
 ]

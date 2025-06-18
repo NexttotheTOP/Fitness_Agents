@@ -8,7 +8,7 @@ from graph.nodes.model_graph_nodes import (
     planner_node,
     tool_executor_node,
     responder_node,
-    router_agent,
+    #router_agent,
     muscle_control_agent,
     camera_control_agent,
     register_writer,
@@ -26,44 +26,37 @@ def create_model_graph():
     builder.add_node("camera_control", camera_control_agent)
     builder.add_node("execute_tools", tool_executor_node)
     builder.add_node("responder", responder_node)
-    builder.add_node("router", router_agent)
+    #builder.add_node("router", router_agent)
 
     builder.add_edge(START, "planner")
     
     # After planning, check which specialized agents are needed
     builder.add_conditional_edges(
         "planner",
-        lambda state: "muscle_control" if state.get("_route_muscle") else "camera_control" if state.get("_route_camera") else "responder",
-        {
-            "muscle_control": "muscle_control",
-            "camera_control": "camera_control",
-            "responder": "responder"
-        }
-    )
-    
-    # MODIFIED: Always go from muscle_control to camera_control
-    builder.add_edge("muscle_control", "camera_control")
-    
-    # MODIFIED: Always go from camera_control to execute_tools 
-    builder.add_edge("camera_control", "execute_tools")
-    
-    # MODIFIED: Always go from execute_tools to responder
-    builder.add_edge("execute_tools", "responder")
-
-    # Router decides next node based on the _route field it adds to state
-    builder.add_conditional_edges(
-        "router",
         lambda state: state.get("_route", "responder"),
         {
-            "execute_tools": "execute_tools",
+            "muscle_control": "muscle_control",
             "responder": "responder"
         }
     )
+    
+    builder.add_edge("muscle_control", "camera_control")
+    
+    builder.add_edge("camera_control", "execute_tools")
+    
+    builder.add_edge("execute_tools", "responder")
 
-    # Final edge
+    # builder.add_conditional_edges(
+    #     "router",
+    #     lambda state: state.get("_route", "responder"),
+    #     {
+    #         "execute_tools": "execute_tools",
+    #         "responder": "responder"
+    #     }
+    # )
+
     builder.add_edge("responder", END)
 
-    # Compile with checkpointing
     return builder.compile(checkpointer=memory_saver)
 
 def create_default_state(thread_id: Optional[str] = None, user_id: Optional[str] = None) -> ModelState:
@@ -111,7 +104,6 @@ class ModelGraphInterface:
             print(f"Found state in active_sessions with {len(self.active_sessions[thread_id].get('messages', []))} messages")
             return self.active_sessions[thread_id]
         
-        # Check if we have this thread in persistent storage
         try:
             checkpoint_data = memory_saver.get(thread_id)
             if checkpoint_data:

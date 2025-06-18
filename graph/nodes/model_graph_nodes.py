@@ -31,7 +31,7 @@ from graph.nodes.model_agents import (
     MUSCLE_NAMING_RULES,
     FUNCTIONAL_GROUPS_STR,
     select_muscles_tool,
-    #toggle_muscle_tool,
+    toggle_muscle_tool,
     set_camera_view_tool,
     reset_camera_tool,
 )
@@ -42,6 +42,7 @@ from graph.shared_state import thread_to_sid, get_sid, emit_event
 # Define constants for specialized tools
 MUSCLE_CONTROL_TOOLS = [
     select_muscles_tool,
+    toggle_muscle_tool,
 ]
 
 CAMERA_CONTROL_TOOLS = [
@@ -193,443 +194,325 @@ def _format_state_for_prompt(state: ModelState) -> str:
         f"Camera position: {camera.get('position', {})}, target: {camera.get('target', {})}"
     )
 
-# ---------------------------------------------------------------------------
-# Router agent node
-# ---------------------------------------------------------------------------
 
-ROUTER_SYSTEM_PROMPT = """You are a routing agent for a 3D muscle model system. Your job is to decide the next step in processing.
 
-You have 2 possible routes:
-1. "execute_tools" - Execute pending tool calls that will manipulate the 3D model
-2. "responder" - Generate a final text response to the user
+# ROUTER_SYSTEM_PROMPT = """You are a routing agent for a 3D muscle model system. Your job is to decide the next step in processing.
 
-[Request Fulfillment Analysis]
-- Your primary task is to determine if the user's request has already been fulfilled
-- Examine the current state (highlighted muscles, camera position) 
-- Compare with what the user asked for
-- Analyze pending tool calls to see if they would provide meaningful changes
+# You have 2 possible routes:
+# 1. "execute_tools" - Execute pending tool calls that will manipulate the 3D model
+# 2. "responder" - Generate a final text response to the user
 
-[Rules for Decision Making]
-- Choose "execute_tools" if:
-  * The user's request has NOT been fulfilled yet
-  * The pending tool calls would make meaningful changes to fulfill the request
-  * The model's current state doesn't match what the user asked for
+# [Request Fulfillment Analysis]
+# - Your primary task is to determine if the user's request has already been fulfilled
+# - Examine the current state (highlighted muscles, camera position) 
+# - Compare with what the user asked for
+# - Analyze pending tool calls to see if they would provide meaningful changes
 
-- Choose "responder" if:
-  * The user's request has already been fulfilled (muscles highlighted, camera positioned)
-  * The pending tool calls are redundant or would undo already completed work
-  * Further tool execution wouldn't provide additional value to the user
+# [Rules for Decision Making]
+# - Choose "execute_tools" if:
+#   * The user's request has NOT been fulfilled yet
+#   * The pending tool calls would make meaningful changes to fulfill the request
+#   * The model's current state doesn't match what the user asked for
 
-[Analysis Guidelines]
-- Understand what the user actually requested (e.g., "highlight chest muscles")
-- Check if the muscles relevant to that request are already highlighted
-- Verify if the camera position is appropriate for viewing those muscles
-- Consider if the pending tool calls would improve the state or just alter it meaninglessly
+# - Choose "responder" if:
+#   * The user's request has already been fulfilled (muscles highlighted, camera positioned)
+#   * The pending tool calls are redundant or would undo already completed work
+#   * Further tool execution wouldn't provide additional value to the user
 
-You must respond ONLY with one of these exact strings: "execute_tools" or "responder"
-"""
+# [Analysis Guidelines]
+# - Understand what the user actually requested (e.g., "highlight chest muscles")
+# - Check if the muscles relevant to that request are already highlighted
+# - Verify if the camera position is appropriate for viewing those muscles
+# - Consider if the pending tool calls would improve the state or just alter it meaninglessly
 
-async def router_agent(
-    state: ModelState,
-    writer: Optional[StreamWriter] = None,
-    context: Optional[Dict[str, Any]] = None,
-) -> ModelState:
-    """Smart router agent that decides whether to execute tools or go to responder.
+# You must respond ONLY with one of these exact strings: "execute_tools" or "responder"
+# """
+
+# async def router_agent(
+#     state: ModelState,
+#     writer: Optional[StreamWriter] = None,
+#     context: Optional[Dict[str, Any]] = None,
+# ) -> ModelState:
+#     """Smart router agent that decides whether to execute tools or go to responder.
     
-    This agent analyzes the current state and pending tool calls to make an intelligent
-    routing decision, preventing loops while ensuring user requests are fulfilled.
+#     This agent analyzes the current state and pending tool calls to make an intelligent
+#     routing decision, preventing loops while ensuring user requests are fulfilled.
     
-    Returns:
-        Updated ModelState with a new _route field containing the routing decision.
-    """
-    # Copy the state to avoid mutations
-    new_state = copy.deepcopy(state)
+#     Returns:
+#         Updated ModelState with a new _route field containing the routing decision.
+#     """
+#     # Copy the state to avoid mutations
+#     new_state = copy.deepcopy(state)
     
-    # Try to get writer from context if not directly provided
-    if writer is None and context and "writer" in context:
-        writer = context["writer"]
-        print(f"[router_agent] Got writer from context!")
+#     # Try to get writer from context if not directly provided
+#     if writer is None and context and "writer" in context:
+#         writer = context["writer"]
+#         print(f"[router_agent] Got writer from context!")
     
-    # Extract iteration count and pending tools info
-    iterations = new_state.get("_planner_iterations", 0)
-    pending_tools = new_state.get("pending_tool_calls", []) or []  # Handle None case
+#     # Extract iteration count and pending tools info
+#     iterations = new_state.get("_planner_iterations", 0)
+#     pending_tools = new_state.get("pending_tool_calls", []) or []  # Handle None case
     
-    # Get the current highlighted muscles and camera state for analysis
-    highlighted_muscles = new_state.get("highlighted_muscles", {}) or {}  # Handle None case
-    camera = new_state.get("camera", {}) or {}  # Handle None case
-    muscles_str = ", ".join(f"{name}" for name in highlighted_muscles.keys()) if highlighted_muscles else "none"
+#     # Get the current highlighted muscles and camera state for analysis
+#     highlighted_muscles = new_state.get("highlighted_muscles", {}) or {}  # Handle None case
+#     camera = new_state.get("camera", {}) or {}  # Handle None case
+#     muscles_str = ", ".join(f"{name}" for name in highlighted_muscles.keys()) if highlighted_muscles else "none"
     
-    # Get the last user query - this is crucial for understanding what was requested
-    last_query = ""
-    messages = new_state.get("messages", []) or []  # Handle None case
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            last_query = msg.get("content", "")
-            break
+#     # Get the last user query - this is crucial for understanding what was requested
+#     last_query = ""
+#     messages = new_state.get("messages", []) or []  # Handle None case
+#     for msg in reversed(messages):
+#         if msg.get("role") == "user":
+#             last_query = msg.get("content", "")
+#             break
     
-    # Get list of events to understand what has already been done
-    events = new_state.get("events", []) or []  # Handle None case
-    event_types = set(e.get("type", "") for e in events if isinstance(e, dict))
+#     # Get list of events to understand what has already been done
+#     events = new_state.get("events", []) or []  # Handle None case
+#     event_types = set(e.get("type", "") for e in events if isinstance(e, dict))
     
-    # Check if assistant_draft is present - important for correctly deciding if we need to respond
-    has_assistant_draft = bool(new_state.get("assistant_draft", "").strip())
+#     # Check if assistant_draft is present - important for correctly deciding if we need to respond
+#     has_assistant_draft = bool(new_state.get("assistant_draft", "").strip())
     
-    # Fast path decisions for simple cases
+#     # Fast path decisions for simple cases
     
-    # 1. No pending tools - go straight to responder
-    if not pending_tools:
-        print(f"[router_agent] No pending tools, routing to responder")
-        new_state["_route"] = "responder"
-        return new_state
+#     # 1. No pending tools - go straight to responder
+#     if not pending_tools:
+#         print(f"[router_agent] No pending tools, routing to responder")
+#         new_state["_route"] = "responder"
+#         return new_state
     
-    # 2. Safety check for excessive iterations
-    if iterations >= 8:
-        print(f"[router_agent] High iteration count ({iterations}), forcing responder")
-        new_state["_route"] = "responder"
-        return new_state
+#     # 2. Safety check for excessive iterations
+#     if iterations >= 8:
+#         print(f"[router_agent] High iteration count ({iterations}), forcing responder")
+#         new_state["_route"] = "responder"
+#         return new_state
         
-    # 3. Check if we've completed the user's request based on specific request type
+#     # 3. Check if we've completed the user's request based on specific request type
     
-    # Analyze the request type
-    request_involves_muscles = any(term in last_query.lower() for term in 
-                                  ["muscle", "highlight", "show", "display", "chest", "arm", "leg", "back", "shoulder",
-                                   "bicep", "tricep", "quad", "core", "abs", "glute"])
+#     # Analyze the request type
+#     request_involves_muscles = any(term in last_query.lower() for term in 
+#                                   ["muscle", "highlight", "show", "display", "chest", "arm", "leg", "back", "shoulder",
+#                                    "bicep", "tricep", "quad", "core", "abs", "glute"])
                                    
-    request_involves_camera = any(term in last_query.lower() for term in 
-                                 ["camera", "view", "angle", "look", "position", "rotate", "turn", "face", "see"])
+#     request_involves_camera = any(term in last_query.lower() for term in 
+#                                  ["camera", "view", "angle", "look", "position", "rotate", "turn", "face", "see"])
     
-    # For muscle requests - check if we have appropriate muscles highlighted
-    if request_involves_muscles and highlighted_muscles:
-        # Check for specific muscle groups mentioned in the query
-        if "chest" in last_query.lower() and any("pectoralis" in m.lower() for m in highlighted_muscles):
-            print(f"[router_agent] Chest muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") == "select_muscles" for call in pending_tools):
-                new_state["_route"] = "responder"
-                return new_state
+#     # For muscle requests - check if we have appropriate muscles highlighted
+#     if request_involves_muscles and highlighted_muscles:
+#         # Check for specific muscle groups mentioned in the query
+#         if "chest" in last_query.lower() and any("pectoralis" in m.lower() for m in highlighted_muscles):
+#             print(f"[router_agent] Chest muscles already highlighted, likely fulfilled request")
+#             if all(call.get("name") == "select_muscles" for call in pending_tools):
+#                 new_state["_route"] = "responder"
+#                 return new_state
                 
-        if "back" in last_query.lower() and any(m.lower() in ["latissimus_dorsi", "trapezius", "rhomboideus"] for m in highlighted_muscles):
-            print(f"[router_agent] Back muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") == "select_muscles" for call in pending_tools):
-                new_state["_route"] = "responder"
-                return new_state
+#         if "back" in last_query.lower() and any(m.lower() in ["latissimus_dorsi", "trapezius", "rhomboideus"] for m in highlighted_muscles):
+#             print(f"[router_agent] Back muscles already highlighted, likely fulfilled request")
+#             if all(call.get("name") == "select_muscles" for call in pending_tools):
+#                 new_state["_route"] = "responder"
+#                 return new_state
                 
-        if "leg" in last_query.lower() and any("femor" in m.lower() or "tibia" in m.lower() or "gluteus" in m.lower() for m in highlighted_muscles):
-            print(f"[router_agent] Leg muscles already highlighted, likely fulfilled request")
-            if all(call.get("name") == "select_muscles" for call in pending_tools):
-                new_state["_route"] = "responder"
-                return new_state
+#         if "leg" in last_query.lower() and any("femor" in m.lower() or "tibia" in m.lower() or "gluteus" in m.lower() for m in highlighted_muscles):
+#             print(f"[router_agent] Leg muscles already highlighted, likely fulfilled request")
+#             if all(call.get("name") == "select_muscles" for call in pending_tools):
+#                 new_state["_route"] = "responder"
+#                 return new_state
     
-    # Check for redundant tool calls
+#     # Check for redundant tool calls
     
-    # Check if we've already performed multiple muscle selection operations
-    muscle_selection_count = sum(1 for e in events if e.get("type") == "model:selectMuscles")
-    if muscle_selection_count >= 2 and request_involves_muscles:
-        print(f"[router_agent] Already performed {muscle_selection_count} muscle selections, seems redundant")
-        # Let's check pending tools - if they're also muscle selections, likely redundant
-        if any(call.get("name") == "select_muscles" for call in pending_tools):
-            new_state["_route"] = "responder"
-            return new_state
+#     # Check if we've already performed multiple muscle selection operations
+#     muscle_selection_count = sum(1 for e in events if e.get("type") == "model:selectMuscles")
+#     if muscle_selection_count >= 2 and request_involves_muscles:
+#         print(f"[router_agent] Already performed {muscle_selection_count} muscle selections, seems redundant")
+#         # Let's check pending tools - if they're also muscle selections, likely redundant
+#         if any(call.get("name") == "select_muscles" for call in pending_tools):
+#             new_state["_route"] = "responder"
+#             return new_state
     
-    # Analyze if pending tools would toggle already highlighted muscles (redundant)
-    if all(call.get("name") == "toggle_muscle" for call in pending_tools) and highlighted_muscles:
-        toggle_targets = [call.get("args", {}).get("muscle_name") for call in pending_tools 
-                         if call.get("name") == "toggle_muscle"]
-        # If all toggle targets are already highlighted, this is redundant
-        if all(target in highlighted_muscles for target in toggle_targets if target):
-            print(f"[router_agent] Pending toggles would just unhighlight already highlighted muscles - redundant")
-            new_state["_route"] = "responder" 
-            return new_state
+#     # Analyze if pending tools would toggle already highlighted muscles (redundant)
+#     if all(call.get("name") == "toggle_muscle" for call in pending_tools) and highlighted_muscles:
+#         toggle_targets = [call.get("args", {}).get("muscle_name") for call in pending_tools 
+#                          if call.get("name") == "toggle_muscle"]
+#         # If all toggle targets are already highlighted, this is redundant
+#         if all(target in highlighted_muscles for target in toggle_targets if target):
+#             print(f"[router_agent] Pending toggles would just unhighlight already highlighted muscles - redundant")
+#             new_state["_route"] = "responder" 
+#             return new_state
     
-    # Create a detailed analysis of the current state for the LLM
-    detailed_state = f"""
-[User's Request]
-{last_query}
+#     # Create a detailed analysis of the current state for the LLM
+#     detailed_state = f"""
+# [User's Request]
+# {last_query}
 
-[Current State]
-- Currently highlighted muscles: {muscles_str}
-- Camera position: {camera.get('position', {})}
-- Camera target: {camera.get('target', {})}
-- Iteration count: {iterations}
+# [Current State]
+# - Currently highlighted muscles: {muscles_str}
+# - Camera position: {camera.get('position', {})}
+# - Camera target: {camera.get('target', {})}
+# - Iteration count: {iterations}
 
-[Events Already Executed]
-- Types of events already run: {list(event_types)}
-- Total events: {len(events)}
-- Has muscle selection events: {any(e.get('type') == 'model:selectMuscles' for e in events)}
-- Has camera position events: {any(e.get('type') == 'model:setCameraPosition' for e in events)}
-- Has camera target events: {any(e.get('type') == 'model:setCameraTarget' for e in events)}
+# [Events Already Executed]
+# - Types of events already run: {list(event_types)}
+# - Total events: {len(events)}
+# - Has muscle selection events: {any(e.get('type') == 'model:selectMuscles' for e in events)}
+# - Has camera position events: {any(e.get('type') == 'model:setCameraPosition' for e in events)}
+# - Has camera target events: {any(e.get('type') == 'model:setCameraTarget' for e in events)}
 
-[Pending Tool Calls]
-- Number of pending tools: {len(pending_tools)}
-- Tool types: {[call.get('name') for call in pending_tools]}
+# [Pending Tool Calls]
+# - Number of pending tools: {len(pending_tools)}
+# - Tool types: {[call.get('name') for call in pending_tools]}
 
-[Request Analysis]
-- Request involves muscles: {request_involves_muscles}
-- Request involves camera: {request_involves_camera}
-- Has assistant draft: {has_assistant_draft}
-"""
+# [Request Analysis]
+# - Request involves muscles: {request_involves_muscles}
+# - Request involves camera: {request_involves_camera}
+# - Has assistant draft: {has_assistant_draft}
+# """
     
-    # Build the prompt
-    system = SystemMessage(content=ROUTER_SYSTEM_PROMPT)
-    human = HumanMessage(content=detailed_state)
+#     # Build the prompt
+#     system = SystemMessage(content=ROUTER_SYSTEM_PROMPT)
+#     human = HumanMessage(content=detailed_state)
     
-    if writer:
-        await writer({"type": "thinking", "content": "Deciding if request is fulfilled..."})
+#     if writer:
+#         await writer({"type": "thinking", "content": "Deciding if request is fulfilled..."})
     
-    try:
-        # Call the LLM for the final decision
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10, streaming=True)
-        response = await llm.ainvoke([system, human])
+#     try:
+#         # Call the LLM for the final decision
+#         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=10, streaming=True)
+#         response = await llm.ainvoke([system, human])
         
-        # Extract the decision (only accept the exact strings we need)
-        decision_text = response.content.strip().lower() if hasattr(response, "content") else ""
+#         # Extract the decision (only accept the exact strings we need)
+#         decision_text = response.content.strip().lower() if hasattr(response, "content") else ""
         
-        # Default to responder if we can't get a clear decision
-        if "execute" in decision_text and not "do not execute" in decision_text:
-            decision = "execute_tools"
-        else:
-            decision = "responder"
-    except Exception as e:
-        print(f"[router_agent] Error calling LLM: {e}, defaulting to responder")
-        decision = "responder"
+#         # Default to responder if we can't get a clear decision
+#         if "execute" in decision_text and not "do not execute" in decision_text:
+#             decision = "execute_tools"
+#         else:
+#             decision = "responder"
+#     except Exception as e:
+#         print(f"[router_agent] Error calling LLM: {e}, defaulting to responder")
+#         decision = "responder"
     
-    print(f"[router_agent] Decision: {decision} (iterations={iterations}, events={len(events)})")
+#     print(f"[router_agent] Decision: {decision} (iterations={iterations}, events={len(events)})")
     
-    # Add routing decision to state
-    new_state["_route"] = decision
+#     # Add routing decision to state
+#     new_state["_route"] = decision
     
-    return new_state
+#     return new_state
 
-# ---------------------------------------------------------------------------
-# 1. Planner node
-# ---------------------------------------------------------------------------
 
-# Update the router prompt to better handle muscle explanations
-PLANNER_ROUTER_PROMPT = """
-You are a routing agent for a 3D muscle model system. Your job is to intelligently route user requests to specialized subsystems.
-
-[Available Subsystems]
-1. Muscle Control System - For highlighting, selecting, or toggling specific muscles
-2. Camera Control System - For adjusting the camera position, angle, or view
-3. Direct Response System - For answering questions without model changes
-
-[CRITICAL ROUTING INSTRUCTIONS]
-- ANY request that involves explaining or discussing specific muscles REQUIRES muscle highlighting
-- Even when users only ask for explanations, they should SEE the muscles being discussed
-- Requests like "explain back muscles" or "tell me about hamstrings" require muscle highlighting
-- Educational requests should always include visual demonstration with muscle highlighting
-- When muscles need to be highlighted, camera positioning should also be adjusted for optimal viewing
-- in short: you should almost always highlight relevant muscles and adjust the camera to show them if the muscles currently in question are not visible yet
-
-[Analysis Guidelines]
-- Consider what would provide the best learning experience, not just the literal request
-- Prefer showing + explaining over just explaining
-- Visual demonstration greatly enhances understanding of muscle anatomy
-- Even information-seeking requests benefit from visual demonstration
-
-[State Context]
-- Check if highlighted muscles already satisfy the request
-- Consider if camera position already provides the optimal view
-
-Provide your routing decision as a JSON with the following format:
-{
-  "muscle_control_needed": true/false,
-  "camera_control_needed": true/false,
-  "reasoning": "Brief explanation of your decision"
-}
-"""
 
 async def planner_node(
     state: ModelState,
     writer: Optional[StreamWriter] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> ModelState:
-    """Decide which specialized agents to route to based on the user query.
-    
-    This node analyzes the user query, the current 3-D model state, and decides which
-    specialized agents should handle the request:
-    - muscle_control_agent for highlighting muscles
-    - camera_control_agent for positioning the camera
-    - responder_node for generating a direct text response
-    
-    Args:
-        state: The current state dictionary
-        writer: Optional streaming writer for token-by-token output
-        context: Optional context with additional parameters
-        
-    Output:
-        state with routing information for specialized agents or direct response
-    """
-    # Ensure we do not mutate the incoming dict directly – copy first.
+
     new_state: ModelState = copy.deepcopy(state)
 
-    # Try to get writer from context if not directly provided
     if writer is None and context and "writer" in context:
         writer = context["writer"]
         print(f"[planner_node] Got writer from context!")
 
-    # Get or initialize iteration counter to prevent infinite loops
-    iterations = new_state.get("_planner_iterations", 0)
-    new_state["_planner_iterations"] = iterations + 1
-    
-    # Get tool execution counter for debugging
-    tool_executions = new_state.get("_tool_executions", 0)
-    
-    # Print debug info
-    print(f"[planner_node] Iteration count: {iterations+1}, Tool executions: {tool_executions}")
-    
-    # Safety check - if we've been through the planner too many times, force exit
-    if iterations >= 10:
-        print(f"[planner_node] WARNING: Too many iterations ({iterations}), forcing responder")
-        new_state["pending_tool_calls"] = None
-        new_state["assistant_draft"] = new_state.get("assistant_draft", "") or "I'll help you understand those muscles."
-        new_state["_route"] = "responder"
-        return new_state
-
-    # Extract conversation history.
     messages_history = new_state.get("messages", []).copy()
     if not messages_history or messages_history[-1]["role"] != "user":
-        # Nothing to do; just return state unchanged.
         return new_state
 
     user_msg = messages_history[-1]["content"]
     print(f"[planner_node] Processing user message: {user_msg}")
 
-    # Check state to see if we've already completed actions for this request
-    control_history = new_state.get("_control_history", {})
-    current_request_id = f"req_{len(messages_history)}"
-    
-    # If we already processed muscle control for this request, don't do it again
-    muscle_control_done = control_history.get(f"{current_request_id}_muscle_done", False)
-    camera_control_done = control_history.get(f"{current_request_id}_camera_done", False)
-    
-    # Format current state for context
     muscles = new_state.get("highlighted_muscles", {})
     muscle_str = ", ".join(f"{m} ({c})" for m, c in muscles.items()) if muscles else "none"
     camera = new_state.get("camera", {})
     camera_str = f"Position: {camera.get('position', {})}, Target: {camera.get('target', {})}"
-    
-    # Create context for the LLM
-    context = f"""
-[Current State]
-- Highlighted muscles: {muscle_str}
-- Camera position and target: {camera_str}
-- Previous actions completed for current request: 
-  - Muscle control: {"Yes" if muscle_control_done else "No"}
-  - Camera control: {"Yes" if camera_control_done else "No"}
+    control_history = new_state.get("_control_history", {})
+    current_request_id = f"req_{len(messages_history)}"
 
-[User Request]
-{user_msg}
 
-Based on this request and the current state, determine which control systems are needed.
-Remember: Explaining muscles requires showing them - we want to provide visual learning experiences.
+
+    planner_prompt = """
+You route user messages on a fitness-focused 3D muscle-model page.
+
+[INPUTS]
+**CURRENT 3D MODEL STATE**  
+- Highlighted muscles
+- Camera position and target
+
+**CONVERSATION HISTORY**  
+   The full back-and-forth of your ongoing chat including the user's latest message.
+
+[Actions]
+1. Muscle Control – highlight / select / toggle muscles (camera auto-frames).
+2. Direct Response – text only, **no model changes** (use only for pure small-talk/far off-topic).
+
+[Routing Policy]
+- The page's purpose is interactive anatomy for fitness; show muscles ~99 % of the time.
+- Default to **Muscle Control** whenever a muscle, body part, exercise, or anatomy concept is mentioned or implied.
+
+you should basically always route to muscle control unless the muscles are already highlighted and still talking about the exact same muscles or greets without anything else.
+
+[Return JSON exactly]
+{
+  "muscle_control": true | false,
+  "reason": "short rationale"
+}
 """
-    
-    # If this is a new user request, reset the control history flags for it
-    if not muscle_control_done and not camera_control_done:
-        print(f"[planner_node] New request detected, resetting control history for {current_request_id}")
-    
-    # If we've already processed both controls, go to responder
-    if muscle_control_done and camera_control_done:
-        print(f"[planner_node] Both muscle and camera control already processed, routing to responder")
-        new_state["_route"] = "responder"
-        new_state["assistant_draft"] = f"I'm analyzing your question about {user_msg}."
-        return new_state
-    
-    # Use LLM to determine routing instead of hardcoded rules
+
+    # Build conversation history as Human/Assistant messages
+    conversation_messages = []
+    for msg in messages_history[:-1]:
+        role = msg.get("role")
+        if role == "user":
+            conversation_messages.append(HumanMessage(content=f"{msg['content']}"))
+        elif role == "assistant":
+            conversation_messages.append(SystemMessage(content=f"{msg['content']}"))
+
+    # Append the latest user message as a HumanMessage (like responder_node)
+    if messages_history and messages_history[-1]["role"] == "user":
+        conversation_messages.append(HumanMessage(content=messages_history[-1]["content"]))
+
+    # Compose the system messages for the LLM
+    system_msgs = [
+        SystemMessage(content=planner_prompt),
+        SystemMessage(content="[CURRENT 3D MODEL STATE]\n" +
+            f"- Highlighted muscles:\n {muscle_str}\n" +
+            f"- Camera position and target:\n {camera_str}\n" 
+
+        ),
+        SystemMessage(content="[CONVERSATION HISTORY]"),
+        *conversation_messages,
+    ]
+
     if writer:
         await writer({"type": "thinking", "content": "Analyzing your request to determine what's needed..."})
-    
-    # Call language model to make routing decision
-    router_system = SystemMessage(content=PLANNER_ROUTER_PROMPT)
-    router_human = HumanMessage(content=context)
-    
-    # Use a more deterministic model for routing decisions
+
     routing_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=500, streaming=True)
-    
+
     try:
-        response = await routing_llm.ainvoke([router_system, router_human])
+        response = await routing_llm.ainvoke(system_msgs)
         response_text = response.content.strip()
-        
         print(f"[planner_node] Router LLM response: {response_text}")
-        
-        # Extract routing decision
-        try:
-            import json
-            # Try to find JSON-like content in the response
-            if '{' in response_text and '}' in response_text:
-                json_start = response_text.find('{')
-                json_end = response_text.rfind('}') + 1
-                json_str = response_text[json_start:json_end]
-                routing_decision = json.loads(json_str)
-                
-                # Get the decisions
-                needs_muscle_control = routing_decision.get("muscle_control_needed", False)
-                needs_camera_control = routing_decision.get("camera_control_needed", False)
-                reasoning = routing_decision.get("reasoning", "")
-                
-                print(f"[planner_node] Routing decision: muscle={needs_muscle_control}, camera={needs_camera_control}")
-                print(f"[planner_node] Reasoning: {reasoning}")
-            else:
-                # Fallback if we can't parse JSON - assume we need both controls for safety
-                print(f"[planner_node] Failed to parse JSON from LLM response, defaulting to full visualization")
-                needs_muscle_control = True
-                needs_camera_control = True
-                
-        except Exception as e:
-            print(f"[planner_node] Error parsing LLM routing decision: {e}, defaulting to full visualization")
-            needs_muscle_control = True
-            needs_camera_control = True
-    
+        import json
+        if '{' in response_text and '}' in response_text:
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            json_str = response_text[json_start:json_end]
+            routing_decision = json.loads(json_str)
+            muscle_control = routing_decision.get("muscle_control", False)
+            print(f"[planner_node] Routing decision: muscle_control={muscle_control}")
+        else:
+            print(f"[planner_node] Failed to parse JSON from LLM response, defaulting to muscle_control")
+            muscle_control = True
     except Exception as e:
-        print(f"[planner_node] Error in routing LLM: {e}, defaulting to full visualization")
-        needs_muscle_control = True
-        needs_camera_control = True
-    
-    # Apply control history - don't repeat already performed actions
-    if muscle_control_done:
-        needs_muscle_control = False
-    if camera_control_done:
-        needs_camera_control = False
-    
-    # Set routing flags based on determined needs
-    if needs_muscle_control:
-        print(f"[planner_node] Request requires muscle control, routing to muscle_control_agent")
-        new_state["_route_muscle"] = True
-        # Mark that we're processing muscle control for this request
-        if not control_history:
-            control_history = {}
-        control_history[f"{current_request_id}_muscle_started"] = True
-        
-        # MODIFIED: We'll now flow directly from muscle_control to camera_control
-        # so we don't need to set _route_camera here. We'll just mark it in the control history
-        # for tracking purposes
-        print(f"[planner_node] Camera control will happen automatically after muscle control")
-        control_history[f"{current_request_id}_camera_started"] = True
+        print(f"[planner_node] Error in routing LLM: {e}, defaulting to muscle_control")
+        muscle_control = True
 
-    elif needs_camera_control:
-        print(f"[planner_node] Request requires only camera control, routing to camera_control_agent")
-        new_state["_route_camera"] = True
-        # Mark that we're processing camera control for this request
-        if not control_history:
-            control_history = {}
-        control_history[f"{current_request_id}_camera_started"] = True
-    
-    # If we don't need either specialized control, generate a direct response
-    if not (needs_muscle_control or needs_camera_control):
-        print(f"[planner_node] No specialized controls needed, routing to responder")
+    if muscle_control:
+        new_state["_route"] = "muscle_control"
+    else:
         new_state["_route"] = "responder"
-    
-    # Update control history in state
-    new_state["_control_history"] = control_history
-    
-    # Store the original user message as context for responder
-    new_state["assistant_draft"] = f"I'm analyzing your question about {user_msg}."
 
+    new_state["assistant_draft"] = f"I'm analyzing your question about {user_msg}."
     return new_state
 
-# ---------------------------------------------------------------------------
-# 2. Tool-executor node
-# ---------------------------------------------------------------------------
 
 def get_color_for_muscle(muscle_name: str) -> str:
     """Generate a consistent color for a muscle based on its name."""
@@ -1074,6 +957,7 @@ async def tool_executor_node(
             summary_event = {"type": "events_summary", "count": len(unique_events)}
             await emit_event(summary_event, thread_id)
     
+    # Return the fully updated state so LangGraph captures it.
     return new_state
 
 # ---------------------------------------------------------------------------
@@ -1141,15 +1025,6 @@ async def responder_node(
             
     model_changes = "; ".join(model_changes_lines) if model_changes_lines else "No model changes."
 
-    system_prompt = SystemMessage(
-        content=RESPONSE_PROMPT
-        + "\n[Auto-Filled Context]"
-        + f"\n- User question: {last_user_question}"
-        + f"\n- Planner summary: {initial_assessment}"
-        + f"\n- Model changes: {model_changes}"
-        + f"\n- Current model state: {_format_state_for_prompt(new_state)}"
-    )
-
     # Convert conversation history to LangChain message format
     conversation_messages = []
     for msg in messages_history[:-1]:  # Exclude the last user message as we'll add it separately
@@ -1158,17 +1033,17 @@ async def responder_node(
             conversation_messages.append(HumanMessage(content=msg["content"]))
         elif role == "assistant":
             conversation_messages.append(AIMessage(content=msg["content"]))
-    
-    # Add the last user message
+    # Append the latest user message as a HumanMessage
     if messages_history and messages_history[-1]["role"] == "user":
         conversation_messages.append(HumanMessage(content=messages_history[-1]["content"]))
 
     # Create full prompt chain with conversation history
     prompt_chain = [
-        system_prompt,
-        SystemMessage(content="Start of the conversation history"),
+        SystemMessage(content=RESPONSE_PROMPT),
+        SystemMessage(content=f"Model changes:\n{model_changes}"),
+        SystemMessage(content=f"Current model state:\n{_format_state_for_prompt(new_state)}"),
+        SystemMessage(content="[CONVERSATION HISTORY]"),
         *conversation_messages,
-        SystemMessage(content="End of the conversation history")
     ]
     
     
@@ -1212,9 +1087,11 @@ async def responder_node(
     new_state["_just_executed_muscle_tools"] = False
     new_state["_tool_executions"] = 0
 
-    # IMPORTANT: Instead of returning, just set a state field for LangGraph to use
-    new_state["final_state"] = True
-    # Don't put any return statement here!
+    #new_state["final_state"] = True
+    print(f"[responder_node] Returning final state with {len(new_state['messages'])} messages. Last message: {new_state['messages'][-1]}")
+
+    # Yield the fully updated state so LangGraph can capture it.
+    yield new_state
 
 async def muscle_control_agent(
     state: ModelState,
@@ -1269,6 +1146,9 @@ async def muscle_control_agent(
             conversation_messages.append(HumanMessage(content=msg["content"]))
         elif role == "assistant":
             conversation_messages.append(AIMessage(content=msg["content"]))
+    # Append the latest user message as a HumanMessage
+    if messages_history and messages_history[-1]["role"] == "user":
+        conversation_messages.append(HumanMessage(content=messages_history[-1]["content"]))
 
     # Compose the prompt chain: system prompt, conversation history, then user message and state
     prompt_chain = [
@@ -1278,11 +1158,9 @@ async def muscle_control_agent(
             MUSCLE_NAMING_RULES=MUSCLE_NAMING_RULES,
             FUNCTIONAL_GROUPS_STR=FUNCTIONAL_GROUPS_STR
         )),
-        SystemMessage(content=f"[Current Model State]\nHighlighted muscles: {highlighted_muscles_str}"),
-        SystemMessage(content="[Conversation History Start]"),
+        SystemMessage(content=f"[CURRENT 3D MODEL STATE]\nHighlighted muscles: {highlighted_muscles_str}"),
+        SystemMessage(content="[CONVERSATION HISTORY]"),
         *conversation_messages,
-        SystemMessage(content="[Conversation History End]"),
-        HumanMessage(content=f"User request: {user_msg}\nCurrently highlighted muscles: {highlighted_muscles_str}")
     ]
 
     if writer:
@@ -1573,12 +1451,12 @@ Camera: {camera_str}
         elif role == "assistant":
             conversation_messages.append(AIMessage(content=msg["content"]))
     
-    # Add a specific camera positioning instruction
-    camera_instruction = "Position the camera to best show the highlighted muscles."
-    enhanced_query = f"{user_msg}\n\n{camera_instruction}"
-            
+    # Append the latest user message as a HumanMessage
+    if messages_history and messages_history[-1]["role"] == "user":
+        conversation_messages.append(HumanMessage(content=messages_history[-1]["content"]))
+
     # Create full prompt
-    prompt_chain = [system, model_snapshot] + conversation_messages + [HumanMessage(content=enhanced_query)]
+    prompt_chain = [system, model_snapshot] + conversation_messages
     
     if writer:
         await writer({"type": "thinking", "content": "Planning camera positioning based on highlighted muscles..."})
