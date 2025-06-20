@@ -103,6 +103,7 @@ def initialize_workout_state(
     profile_sections = {}
     profile_assessment = ""
     body_analysis = ""
+    progress_tracking = ""
     
     if profile_data:
         # Get the full response
@@ -124,6 +125,8 @@ def initialize_workout_state(
         print(f"- Profile assessment preview: {profile_assessment[:200]}...")
         print(f"- Body analysis length: {len(body_analysis)}")
         print(f"- Body analysis preview: {body_analysis[:200]}...")
+    else:
+        previous_response = ""
     
     # Create the initial state
     print("\n---CREATING INITIAL STATE---")
@@ -144,7 +147,7 @@ def initialize_workout_state(
         "context": context or {},
         
         # User profile context
-        "user_profile": profile_data.get("metadata", {}),  # Use backend metadata
+        "user_profile": profile_data.get("metadata", {}) if profile_data else {},  # Use backend metadata
         "profile_assessment": profile_assessment,
         "body_analysis": body_analysis,
         "progress_tracking": progress_tracking,

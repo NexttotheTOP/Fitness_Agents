@@ -18,6 +18,7 @@ from anthropic import Anthropic
 # Add stream writer for custom streaming
 from langgraph.config import get_stream_writer
 from langchain_core.messages import SystemMessage, HumanMessage
+import logging
 
 # Load environment variables
 load_dotenv()
@@ -1479,14 +1480,20 @@ class HeadCoachAgent:
         """Stream progress-tracking analysis token by token.
 
         ‑ Emits custom events of type `progress` so the outer streaming loop can forward them.
--        ‑ Relies on compare_responses() for the heavy lifting.
-+        ‑ Uses the LLM directly with a progress-tracking prompt (see _progress_prompt).
+        ‑ Uses the LLM directly with a progress-tracking prompt (see _progress_prompt).
         """
         writer = get_stream_writer()
 
         writer({"type": "step", "content": "Generating progress tracking..."})
 
-        previous_overview = state.get("previous_complete_response", "")
+        previous_overview = state.get("previous_complete_response")
+
+        logging.info("\n\n[HeadCoachAgent] Checking for previous overview...")
+        logging.info(f"[HeadCoachAgent] previous_overview is None: {previous_overview is None}")
+        if previous_overview is not None:
+            logging.info(f"[HeadCoachAgent] previous_overview length: {len(previous_overview)}")
+        else:
+            logging.info("[HeadCoachAgent] previous_overview is None or empty.")
 
         # Build the current overview from parts that previous agents already stored in state
         current_parts = []
@@ -1498,14 +1505,20 @@ class HeadCoachAgent:
         current_parts.append(state["fitness_state"].content)
         current_overview = "\n\n".join(current_parts)
 
-        # First run? -> nothing to compare, emit placeholder once and finish
         if not previous_overview:
-            first_msg = "\n\n---\n\n## Progress Tracking\n\nThis is your first fitness assessment. Future assessments will include progress tracking.\n\n---\n\n"
-            state["progress_comparison"] = first_msg
-            writer({"type": "progress", "content": first_msg})
-            yield first_msg
+            logging.info("[HeadCoachAgent] No previous overview found. Generating fallback message.")
+            progress_text = ""
+            first_msg_token = "\n\n---\n\n## Progress Tracking\n\nThis is your first fitness assessment. Future assessments will include progress tracking.\n\n---\n\n"
+            progress_text += first_msg_token
+
+            writer({"type": "progress", "content": progress_text})
+            logging.info("[HeadCoachAgent] Wrote to writer and yielding fallback message.")
+            yield first_msg_token
+            state["progress_comparison"] = progress_text
+            logging.info("[HeadCoachAgent] Exiting stream early.")
             return
 
+        logging.info("[HeadCoachAgent] Previous overview found. Generating comparison.")
         comparison_prompt = """Role & Expertise
 You are a world-class Fitness Progress Analyst and Performance Coach with 15+ years specializing in longitudinal client assessment and transformation tracking. Your expertise encompasses:
 
@@ -1716,11 +1729,11 @@ Final Output Goal: Deliver a comprehensive, personalized progress analysis that 
         """Create progress-tracking text (non-stream invocation).
         Stores the full comparison under state["progress_tracking"].
         """
-        previous_overview = state.get("previous_complete_response", "")
+        previous_overview = state.get("previous_complete_response")
 
         # If no previous overview, store placeholder and exit
         if not previous_overview:
-            state["progress_comparison"] = "This is your first fitness assessment. Future assessments will include progress tracking."
+            state["progress_comparison"] = "\n\n---\n\n## Progress Tracking\n\nThis is your first fitness assessment. Future assessments will include progress tracking.\n\n---\n\n"
             return state
 
         # Build current overview (same logic as in stream)

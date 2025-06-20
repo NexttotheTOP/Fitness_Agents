@@ -196,6 +196,12 @@ async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterab
                                 final_content["fitness_plan"] = fitness_state.content
                                 streamed_overview += fitness_state.content
                                 yield f"data: {json.dumps({'type': 'content', 'content': fitness_state.content})}\n\n"
+                        if node_name == "head_coach" and "progress_comparison" in chunk["return_values"]:
+                            progress_content = chunk["return_values"]["progress_comparison"]
+                            if progress_content and progress_content.strip():
+                                final_content["progress_tracking"] = progress_content
+                                streamed_overview += progress_content
+                                yield f"data: {json.dumps({'type': 'content', 'content': progress_content})}\n\n"
             elif chunk_type == "messages":
                 message_chunk, metadata = chunk
                 token = None
@@ -211,6 +217,8 @@ async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterab
                         final_content["dietary_plan"] += token
                     elif node_name == "fitness":
                         final_content["fitness_plan"] += token
+                    elif node_name == "head_coach":
+                        final_content["progress_tracking"] += token
                     streamed_overview += token
                     yield f"data: {json.dumps({'type': 'content', 'content': token})}\n\n"
         # --- END NEW ---
@@ -219,6 +227,7 @@ async def stream_response(state: WorkoutState, query: str = None) -> AsyncIterab
         logging.error(traceback.format_exc())
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
     finally:
+        # Ensure the stream is properly terminated.
         yield "data: [DONE]\n\n"
 
 async def process_query(state: WorkoutState, query: str) -> AsyncIterable[str]:
